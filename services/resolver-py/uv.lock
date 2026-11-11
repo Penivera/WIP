@@ -943,7 +943,7 @@ wheels = [
 [[package]]
 name = "resolver-py"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "base58" },
     { name = "eth-account" },

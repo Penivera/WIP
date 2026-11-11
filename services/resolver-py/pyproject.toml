@@ -1,7 +1,7 @@
 [project]
 name = "resolver-py"
 version = "0.1.0"
-description = "Add your description here"
+description = "Universal Name backend resolver and intent router"
 readme = "README.md"
 authors = [
     { name = "Sanaur Asif", email = "sanaurasif2@gmail.com" }
@@ -18,10 +18,3 @@ dependencies = [
     "pytest-asyncio>=1.4.1.post1",
     "uvicorn>=0.54.0",
 ]
-
-[project.scripts]
-resolver-py = "resolver_py:main"
-
-[build-system]
-requires = ["uv_build>=0.13.0,<0.14.0"]
-build-backend = "uv_build"
