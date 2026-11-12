@@ -1,11 +1,16 @@
+use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
 use near_sdk::serde_json::json;
 use near_sdk::store::{IterableSet, LookupMap};
-use near_sdk::{env, near, require, AccountId, PanicOnDefault};
+use near_sdk::{env, near, require, AccountId, PanicOnDefault, PromiseOrValue};
 
 pub const NAME_MIN: usize = 3;
 pub const NAME_MAX: usize = 32;
 pub const DEFAULT_DELAY_SECS: u64 = 3600;
+
+pub const DEFAULT_PRICE_3_CHAR: u128 = 50_000_000; // 50 USDC ($50.00)
+pub const DEFAULT_PRICE_4_CHAR: u128 = 20_000_000; // 20 USDC ($20.00)
+pub const DEFAULT_PRICE_5_PLUS: u128 = 5_000_000; // 5 USDC ($5.00)
 
 const RESERVED: [&str; 16] = [
     "admin",
@@ -110,12 +115,29 @@ pub struct ResolvedRecord {
     pub chain: String,
 }
 
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PricingConfig {
+    pub payment_token: Option<AccountId>,
+    pub accepted_tokens: Vec<AccountId>,
+    pub relayer: Option<AccountId>,
+    pub price_3_char: U128,
+    pub price_4_char: U128,
+    pub price_5_plus_char: U128,
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum EventData {
     NameClaimed {
         name: String,
         owner: String,
+    },
+    PaymentProcessed {
+        name: String,
+        payer: String,
+        amount: String,
+        payment_ref: String,
     },
     ChainConnected {
         name: String,
@@ -356,12 +378,26 @@ fn require_owner(record: &Record) {
     require!(record.owner == env::predecessor_account_id(), "NOT_OWNER");
 }
 
+#[near(serializers = [borsh])]
+pub struct OldContract {
+    records: LookupMap<String, Record>,
+    owner_names: LookupMap<AccountId, IterableSet<String>>,
+    change_delay_ms: u64,
+}
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Contract {
     records: LookupMap<String, Record>,
     owner_names: LookupMap<AccountId, IterableSet<String>>,
     change_delay_ms: u64,
+    admin: AccountId,
+    payment_token: Option<AccountId>,
+    accepted_tokens: Vec<AccountId>,
+    relayer: Option<AccountId>,
+    price_3_char: u128,
+    price_4_char: u128,
+    price_5_plus_char: u128,
 }
 
 #[near]
@@ -372,6 +408,31 @@ impl Contract {
             records: LookupMap::new(b"r".to_vec()),
             owner_names: LookupMap::new(b"n".to_vec()),
             change_delay_ms: change_delay_secs.unwrap_or(DEFAULT_DELAY_SECS) * 1000,
+            admin: env::predecessor_account_id(),
+            payment_token: None,
+            accepted_tokens: Vec::new(),
+            relayer: None,
+            price_3_char: DEFAULT_PRICE_3_CHAR,
+            price_4_char: DEFAULT_PRICE_4_CHAR,
+            price_5_plus_char: DEFAULT_PRICE_5_PLUS,
+        }
+    }
+
+    #[private]
+    #[init(ignore_state = true)]
+    pub fn migrate() -> Self {
+        let old: OldContract = env::state_read().expect("Old state not found");
+        Self {
+            records: old.records,
+            owner_names: old.owner_names,
+            change_delay_ms: old.change_delay_ms,
+            admin: env::predecessor_account_id(),
+            payment_token: None,
+            accepted_tokens: Vec::new(),
+            relayer: None,
+            price_3_char: DEFAULT_PRICE_3_CHAR,
+            price_4_char: DEFAULT_PRICE_4_CHAR,
+            price_5_plus_char: DEFAULT_PRICE_5_PLUS,
         }
     }
 
@@ -379,12 +440,86 @@ impl Contract {
         self.change_delay_ms
     }
 
-    pub fn claim(&mut self, name: String) -> String {
-        let full = canonical_name(&name);
+    pub fn price_for_name(&self, name: String) -> U128 {
+        let label = validate_name(&name);
+        let len = label.len();
+        let price = match len {
+            3 => self.price_3_char,
+            4 => self.price_4_char,
+            _ => self.price_5_plus_char,
+        };
+        U128(price)
+    }
+
+    pub fn get_pricing_config(&self) -> PricingConfig {
+        PricingConfig {
+            payment_token: self.payment_token.clone(),
+            accepted_tokens: self.accepted_tokens.clone(),
+            relayer: self.relayer.clone(),
+            price_3_char: U128(self.price_3_char),
+            price_4_char: U128(self.price_4_char),
+            price_5_plus_char: U128(self.price_5_plus_char),
+        }
+    }
+
+    pub fn add_payment_token(&mut self, token: AccountId) {
+        require!(env::predecessor_account_id() == self.admin, "NOT_ADMIN");
+        if !self.accepted_tokens.contains(&token) {
+            self.accepted_tokens.push(token);
+        }
+    }
+
+    pub fn remove_payment_token(&mut self, token: AccountId) {
+        require!(env::predecessor_account_id() == self.admin, "NOT_ADMIN");
+        self.accepted_tokens.retain(|t| t != &token);
+    }
+
+    pub fn is_token_accepted(&self, token: &AccountId) -> bool {
+        if self.accepted_tokens.contains(token) {
+            return true;
+        }
+        if let Some(ref pt) = self.payment_token {
+            return pt == token;
+        }
+        self.payment_token.is_none() && self.accepted_tokens.is_empty()
+    }
+
+    pub fn set_pricing_config(
+        &mut self,
+        payment_token: Option<AccountId>,
+        relayer: Option<AccountId>,
+        price_3_char: Option<U128>,
+        price_4_char: Option<U128>,
+        price_5_plus_char: Option<U128>,
+    ) {
+        require!(env::predecessor_account_id() == self.admin, "NOT_ADMIN");
+        if let Some(t) = payment_token {
+            self.payment_token = Some(t);
+        }
+        if let Some(r) = relayer {
+            self.relayer = Some(r);
+        }
+        if let Some(p) = price_3_char {
+            self.price_3_char = p.0;
+        }
+        if let Some(p) = price_4_char {
+            self.price_4_char = p.0;
+        }
+        if let Some(p) = price_5_plus_char {
+            self.price_5_plus_char = p.0;
+        }
+    }
+
+    pub fn set_admin(&mut self, new_admin: AccountId) {
+        require!(env::predecessor_account_id() == self.admin, "NOT_ADMIN");
+        self.admin = new_admin;
+    }
+
+    fn internal_claim(&mut self, name: &str, owner: &AccountId) -> String {
+        let full = canonical_name(name);
         if self.records.contains_key(&full) {
             panic_code("NAME_TAKEN", "");
         }
-        let owner = env::predecessor_account_id();
         self.records.insert(
             full.clone(),
             Record {
@@ -395,12 +530,12 @@ impl Contract {
                 pending: None,
             },
         );
-        match self.owner_names.get_mut(&owner) {
+        match self.owner_names.get_mut(owner) {
             Some(set) => {
                 set.insert(full.clone());
             }
             None => {
-                let mut set = IterableSet::new(owner_prefix(&owner));
+                let mut set = IterableSet::new(owner_prefix(owner));
                 set.insert(full.clone());
                 self.owner_names.insert(owner.clone(), set);
             }
@@ -413,6 +548,79 @@ impl Contract {
             },
         );
         full
+    }
+
+    pub fn claim(&mut self, name: String) -> String {
+        let caller = env::predecessor_account_id();
+        let is_privileged = caller == self.admin || Some(&caller) == self.relayer.as_ref();
+        let has_token_restriction =
+            self.payment_token.is_some() || !self.accepted_tokens.is_empty();
+        if has_token_restriction && !is_privileged {
+            panic_code(
+                "PAYMENT_REQUIRED",
+                "pay via ft_on_transfer or cross-chain checkout",
+            );
+        }
+        self.internal_claim(&name, &caller)
+    }
+
+    pub fn claim_for(&mut self, name: String, owner: AccountId, payment_ref: String) -> String {
+        let caller = env::predecessor_account_id();
+        let is_privileged = caller == self.admin || Some(&caller) == self.relayer.as_ref();
+        require!(is_privileged, "NOT_AUTHORIZED");
+        let full = self.internal_claim(&name, &owner);
+        let amount = self.price_for_name(name).0;
+        emit(
+            "PaymentProcessed",
+            &EventData::PaymentProcessed {
+                name: full.clone(),
+                payer: caller.to_string(),
+                amount: amount.to_string(),
+                payment_ref,
+            },
+        );
+        full
+    }
+
+    pub fn ft_on_transfer(
+        &mut self,
+        sender_id: AccountId,
+        amount: U128,
+        msg: String,
+    ) -> PromiseOrValue<U128> {
+        let token = env::predecessor_account_id();
+        if !self.is_token_accepted(&token) {
+            panic_code("UNSUPPORTED_TOKEN", token.as_ref());
+        }
+        let name =
+            if let Ok(val) = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(&msg) {
+                val.get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(&msg)
+                    .to_string()
+            } else {
+                msg.trim().to_string()
+            };
+
+        let price = self.price_for_name(name.clone()).0;
+        if amount.0 < price {
+            // Insufficient payment: refund entire amount back to sender
+            return PromiseOrValue::Value(amount);
+        }
+
+        let full = self.internal_claim(&name, &sender_id);
+        emit(
+            "PaymentProcessed",
+            &EventData::PaymentProcessed {
+                name: full,
+                payer: sender_id.to_string(),
+                amount: price.to_string(),
+                payment_ref: format!("nep141:{token}"),
+            },
+        );
+
+        let refund = amount.0 - price;
+        PromiseOrValue::Value(U128(refund))
     }
 
     pub fn set_record(&mut self, name: String, chain: String, address: Vec<u8>, proof: Vec<u8>) {

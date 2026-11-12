@@ -26,6 +26,15 @@ Backend orchestration service for Universal Name (`.uni`). Queries `unam-registr
 
 ## Endpoints
 
+### Domain Registration & Multichain Stablecoin Checkout
+- `GET /v1/checkout/pricing?name={name}` — Returns length-tiered pricing ($50 / $20 / $5), availability status, and supported payment channels.
+- `GET /v1/checkout/chains` — Lists all supported blockchains (Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Solana, NEAR) and accepted stablecoins (USDC, USDT).
+- `POST /v1/checkout/session` — Creates a checkout session with a deposit address on the buyer's chain.
+- `GET /v1/checkout/session/{checkout_id}` — Retrieves live payment status (`PENDING_PAYMENT`, `PROCESSING`, `COMPLETED`).
+- `POST /v1/checkout/submit` — Submits origin chain payment transaction hash and triggers automated NEAR contract fulfillment (`claim_for`).
+- `POST /v1/checkout/simulate` — Simulates terminal payment transitions for integration testing.
+
+### Name Resolution & Routing
 - `GET /v1/resolve?name=demo.uni&chain=eip155:1&token=native` — Resolves a `.uni` name (Mode 1 Direct, Mode 2 Routed via 1Click/Chain Signatures, or Mode 3 Bank Payout).
 - `GET /v1/tokens` — Returns supported tokens from 1Click API (`/v0/tokens`).
 - `POST /v1/deposit/submit` — Submits an on-chain deposit `txHash` and `depositAddress` to 1Click (`/v0/deposit/submit`).

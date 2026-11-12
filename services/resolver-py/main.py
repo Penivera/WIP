@@ -20,6 +20,7 @@ from proofs import (
     verify_chain_proof,
 )
 from router_adapter import RouterAdapter
+from checkout_adapter import CheckoutAdapter
 
 app = FastAPI(title="Universal Name (.uni) Resolver & Router Service", version="1.0.0")
 
@@ -34,6 +35,7 @@ near_client = NearContractClient()
 cs_manager = ChainSignaturesManager()
 router = RouterAdapter(cs_manager)
 offramp = OffRampAdapter()
+checkout_adapter = CheckoutAdapter(near_client, cs_manager)
 
 # Tracks routed payment statuses for the Owner Dashboard (Spec Flows C, D, E)
 PAYMENT_DASHBOARD: dict[str, dict] = {}
@@ -399,6 +401,99 @@ async def simulate_payment_transition(req: SimulateTransitionRequest):
         entry["status"] = req.event
 
     return entry
+
+
+# MULTICHAIN STABLECOIN CHECKOUT ENDPOINTS (Domain Purchasing)
+
+class CreateCheckoutRequest(BaseModel):
+    name: str
+    owner: str
+    chain: str
+    token: str = "USDC"
+    refund_to: str | None = None
+
+
+class SubmitCheckoutPaymentRequest(BaseModel):
+    checkout_id: str
+    tx_hash: str
+
+
+class SimulateCheckoutRequest(BaseModel):
+    checkout_id: str
+    event: str = "SUCCESS"
+
+
+@app.get("/v1/checkout/chains")
+async def get_checkout_supported_chains():
+    """Returns all supported blockchains and accepted stablecoins for domain purchase."""
+    return checkout_adapter.get_supported_stables_catalog()
+
+
+@app.get("/v1/checkout/pricing")
+async def get_checkout_pricing(
+    name: str = Query(..., description="Universal Name, e.g. alice.uni"),
+):
+    """Returns domain availability, length-tiered pricing, and payment channels."""
+    try:
+        return await checkout_adapter.get_pricing_and_availability(name)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail={"error": str(err)})
+
+
+@app.post("/v1/checkout/session")
+async def create_checkout_session(req: CreateCheckoutRequest):
+    """
+    Creates a new domain purchase checkout session.
+    Generates a deposit address on the user's chosen blockchain for stablecoin payment.
+    """
+    try:
+        return await checkout_adapter.create_checkout_session(
+            name=req.name,
+            owner=req.owner,
+            chain=req.chain,
+            token=req.token,
+            refund_to=req.refund_to,
+        )
+    except ValueError as err:
+        msg = str(err)
+        if "already registered" in msg:
+            raise HTTPException(status_code=409, detail={"error": "NAME_TAKEN", "message": msg})
+        raise HTTPException(status_code=400, detail={"error": "CHECKOUT_FAILED", "message": msg})
+
+
+@app.get("/v1/checkout/session/{checkout_id}")
+async def get_checkout_session(checkout_id: str):
+    """Retrieves current checkout session details, payment status, and NEAR settlement info."""
+    session = checkout_adapter.get_checkout_session(checkout_id)
+    if not session:
+        raise HTTPException(status_code=404, detail={"error": "CHECKOUT_NOT_FOUND"})
+    return session
+
+
+@app.post("/v1/checkout/submit")
+async def submit_checkout_payment(req: SubmitCheckoutPaymentRequest):
+    """
+    Submits on-chain payment txHash. Settles domain claim on the NEAR contract via relayer.
+    """
+    try:
+        return await checkout_adapter.submit_payment(
+            checkout_id=req.checkout_id,
+            tx_hash=req.tx_hash,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail={"error": str(err)})
+
+
+@app.post("/v1/checkout/simulate")
+async def simulate_checkout_payment(req: SimulateCheckoutRequest):
+    """Simulates payment completion for test/demo environments."""
+    try:
+        return await checkout_adapter.simulate_payment(
+            checkout_id=req.checkout_id,
+            event=req.event,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail={"error": str(err)})
 
 
 if __name__ == "__main__":

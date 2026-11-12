@@ -1,5 +1,5 @@
 use near_sdk::test_utils::{accounts, VMContextBuilder};
-use near_sdk::{testing_env, VMContext};
+use near_sdk::{testing_env, AccountId, VMContext};
 use unam_registry::{
     ChainRecord, Contract, Destination, EventData, PendingChangeKind, ReceivePolicy,
 };
@@ -355,4 +355,139 @@ fn standard_aligned_method_names() {
         .chains
         .get("eip155:1")
         .is_none());
+}
+
+#[test]
+fn length_tiered_pricing_and_payment_flow() {
+    testing_env!(owner_ctx());
+    let mut c = contract();
+
+    // 1. Verify length-tiered pricing
+    assert_eq!(c.price_for_name("abc".into()).0, 50_000_000); // 3 chars -> $50
+    assert_eq!(c.price_for_name("abcd".into()).0, 20_000_000); // 4 chars -> $20
+    assert_eq!(c.price_for_name("abcde".into()).0, 5_000_000); // 5 chars -> $5
+    assert_eq!(c.price_for_name("verylongname.uni".into()).0, 5_000_000);
+
+    // 2. Configure relayer and payment token (USDC: accounts(4), relayer: accounts(2))
+    let usdc = accounts(4);
+    let relayer = accounts(2);
+    c.set_pricing_config(Some(usdc.clone()), Some(relayer.clone()), None, None, None);
+
+    let config = c.get_pricing_config();
+    assert_eq!(config.payment_token, Some(usdc.clone()));
+    assert_eq!(config.relayer, Some(relayer.clone()));
+
+    // 3. Unauthorized claim_for must fail
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(accounts(5))
+        .current_account_id(accounts(1))
+        .build());
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.claim_for("hacker".into(), accounts(5), "ref_fake".into());
+    }));
+    assert!(err.is_err(), "unauthorized claim_for must fail");
+
+    // 4. Authorized relayer claim_for succeeds (Cross-chain checkout flow)
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(relayer.clone())
+        .current_account_id(accounts(1))
+        .build());
+    let claimed = c.claim_for(
+        "crosschain".into(),
+        accounts(3),
+        "intent:0x123abc456def".into(),
+    );
+    assert_eq!(claimed, "crosschain.uni");
+    assert_eq!(c.owner_of("crosschain.uni".into()), Some(accounts(3)));
+
+    // 5. Normal claim without payment when payment_token is set must fail
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(accounts(5))
+        .current_account_id(accounts(1))
+        .build());
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.claim("user5".into());
+    }));
+    assert!(err.is_err(), "claim without payment must fail");
+
+    // 6. Native NEP-141 ft_on_transfer: Insufficient payment -> full refund
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(usdc.clone())
+        .current_account_id(accounts(1))
+        .build());
+    let refund = match c.ft_on_transfer(
+        accounts(5),
+        near_sdk::json_types::U128(2_000_000), // only $2, needs $5
+        "user5".into(),
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 2_000_000);
+    assert_eq!(c.owner_of("user5.uni".into()), None);
+
+    // 7. Native NEP-141 ft_on_transfer: Exact payment -> registered, 0 refund
+    let refund = match c.ft_on_transfer(
+        accounts(5),
+        near_sdk::json_types::U128(5_000_000), // exact $5
+        "{\"name\":\"user5\"}".into(),
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("user5.uni".into()), Some(accounts(5)));
+
+    // 8. Native NEP-141 ft_on_transfer: Excess payment -> refunds difference
+    // 4-char name "four" costs $20 (20_000_000), user pays $25 (25_000_000)
+    let user6: AccountId = "user6.testnet".parse().unwrap();
+    let refund = match c.ft_on_transfer(
+        user6.clone(),
+        near_sdk::json_types::U128(25_000_000),
+        "four.uni".into(),
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 5_000_000);
+    assert_eq!(c.owner_of("four.uni".into()), Some(user6.clone()));
+
+    // 9. Unauthorized token calling ft_on_transfer must fail
+    let fake_token: AccountId = "fake-token.testnet".parse().unwrap();
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(fake_token)
+        .current_account_id(accounts(1))
+        .build());
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.ft_on_transfer(
+            user6.clone(),
+            near_sdk::json_types::U128(50_000_000),
+            "six.uni".into(),
+        );
+    }));
+    assert!(err.is_err(), "unsupported token must panic");
+
+    // 10. Admin adds USDT as an accepted payment stablecoin -> USDT ft_on_transfer succeeds
+    let usdt: AccountId = "usdt.testnet".parse().unwrap();
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(accounts(0))
+        .current_account_id(accounts(1))
+        .build());
+    c.add_payment_token(usdt.clone());
+    assert!(c.get_pricing_config().accepted_tokens.contains(&usdt));
+
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(usdt)
+        .current_account_id(accounts(1))
+        .build());
+    let refund = match c.ft_on_transfer(
+        user6.clone(),
+        near_sdk::json_types::U128(50_000_000),
+        "six.uni".into(),
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("six.uni".into()), Some(user6));
 }
