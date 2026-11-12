@@ -4,6 +4,12 @@ Concept and technical specification for NEAR HACKATHON 2026 · Nov 7, 2026 · @P
 
 *Working title for the name suffix is `.uni`; examples use `peni.uni`. See Open Questions.*
 
+## Deployment & Quick Links
+
+- **Live Testnet Contract:** [`unam-registry.testnet`](https://explorer.testnet.near.org/accounts/unam-registry.testnet)
+- **Multichain Stablecoin & Intent Settlement Guide:** [DOCS_SUPPORTED_STABLES.md](file:///home/peni/Projects/wip/DOCS_SUPPORTED_STABLES.md)
+- **Backend Resolver & Router Service:** [resolver-py/README.md](file:///home/peni/Projects/wip/resolver-py/README.md)
+
 ## Standards alignment
 
 The registry is designed around two emerging standards:

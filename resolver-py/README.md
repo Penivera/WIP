@@ -7,7 +7,7 @@ Backend orchestration service for Universal Name (`.uni`). Queries `unam-registr
 1. Install [uv](https://docs.astral.sh/uv/)
 2. Install dependencies:
    ```bash
-   cd services/resolver-py
+   cd resolver-py
    uv sync
    ```
 3. (Optional) Copy `.env.example` to `.env` to customize settings:
@@ -23,6 +23,8 @@ Backend orchestration service for Universal Name (`.uni`). Queries `unam-registr
    ```bash
    uv run python main.py
    ```
+
+*See [DOCS_SUPPORTED_STABLES.md](../DOCS_SUPPORTED_STABLES.md) for full details on multichain stablecoin support, intent settlement, and cross-chain routing.*
 
 ## Endpoints
 

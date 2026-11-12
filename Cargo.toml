@@ -2,9 +2,6 @@
 resolver = "2"
 members = [
     "contracts/registry",
-    "services/resolver",
-    "services/router",
-    "services/cs-manager",
 ]
 
 [workspace.package]

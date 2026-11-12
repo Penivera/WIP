@@ -127,7 +127,7 @@ def test_create_checkout_session_usdt(chain_key: str):
 
 
 def test_checkout_rejects_unsupported_tokens_and_chains():
-    # Reject non-stablecoin token (e.g. DOGE, ETH)
+    # Reject non-supported token (e.g. DOGE, SHIB)
     resp = client.post(
         "/v1/checkout/session",
         json={
@@ -138,7 +138,7 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
         },
     )
     assert resp.status_code == 400
-    assert "Unsupported stablecoin" in resp.json()["detail"]["message"]
+    assert "Unsupported payment asset" in resp.json()["detail"]["message"]
 
     # Reject unsupported chain with unknown namespace
     resp_cosmo = client.post(
@@ -153,7 +153,7 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
     assert resp_cosmo.status_code == 400
     assert "CHAIN_KEY_INVALID" in resp_cosmo.json()["detail"]["message"]
 
-    # Reject unsupported chain with valid namespace but not in stablecoin catalog
+    # Reject unsupported chain with valid namespace but not in catalog
     resp_evm = client.post(
         "/v1/checkout/session",
         json={
@@ -165,6 +165,57 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
     )
     assert resp_evm.status_code == 400
     assert "Unsupported payment chain" in resp_evm.json()["detail"]["message"]
+
+
+def test_create_checkout_session_intent_routed_assets():
+    # 1. Pay with ETH on Base
+    resp_eth = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "ethpayer.uni",
+            "owner": "ethfan.testnet",
+            "chain": "base",
+            "token": "ETH",
+        },
+    )
+    assert resp_eth.status_code == 200
+    sess_eth = resp_eth.json()
+    assert sess_eth["token"] == "ETH"
+    assert sess_eth["isStable"] is False
+    assert sess_eth["settlementType"] == "INTENT_SWAP_SETTLEMENT"
+    assert "USDC (NEAR Protocol)" in sess_eth["settlementAsset"]
+    assert "Intent Router will swap" in sess_eth["instructions"]
+
+    # 2. Pay with SOL on Solana
+    resp_sol = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "solpayer.uni",
+            "owner": "solfan.testnet",
+            "chain": "solana",
+            "token": "SOL",
+        },
+    )
+    assert resp_sol.status_code == 200
+    sess_sol = resp_sol.json()
+    assert sess_sol["token"] == "SOL"
+    assert sess_sol["isStable"] is False
+    assert sess_sol["settlementType"] == "INTENT_SWAP_SETTLEMENT"
+
+    # 3. Pay with DAI on Ethereum
+    resp_dai = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "daipayer.uni",
+            "owner": "daifan.testnet",
+            "chain": "eip155:1",
+            "token": "DAI",
+        },
+    )
+    assert resp_dai.status_code == 200
+    sess_dai = resp_dai.json()
+    assert sess_dai["token"] == "DAI"
+    assert sess_dai["isStable"] is True
 
 
 def test_checkout_rejects_taken_domain():

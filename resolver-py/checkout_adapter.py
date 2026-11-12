@@ -52,6 +52,12 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
             "decimals": 6,
             "contractAddress": "0xdac17f958d2ee523a2206206994597c13d831ec7",
         },
+        {
+            "symbol": "DAI",
+            "name": "Dai Stablecoin",
+            "decimals": 18,
+            "contractAddress": "0x6b175474e89094c44da98b954eedeac495271d0f",
+        },
     ],
     "eip155:8453": [
         {
@@ -73,6 +79,12 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
             "name": "Tether USD",
             "decimals": 6,
             "contractAddress": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        },
+        {
+            "symbol": "DAI",
+            "name": "Dai Stablecoin",
+            "decimals": 18,
+            "contractAddress": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
         },
     ],
     "eip155:10": [
@@ -101,6 +113,12 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
             "name": "Tether USD",
             "decimals": 6,
             "contractAddress": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+        },
+        {
+            "symbol": "DAI",
+            "name": "Dai Stablecoin",
+            "decimals": 18,
+            "contractAddress": "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063",
         },
     ],
     "eip155:56": [
@@ -175,6 +193,40 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+# Cross-chain assets that can be routed via Intent to settle on NEAR in supported stablecoins
+INTENT_ROUTABLE_ASSETS: dict[str, list[dict[str, Any]]] = {
+    "eip155:1": [
+        {"symbol": "ETH", "name": "Ethereum", "decimals": 18, "contractAddress": "native", "priceUsd": 2050.0},
+    ],
+    "eip155:8453": [
+        {"symbol": "ETH", "name": "Ethereum", "decimals": 18, "contractAddress": "native", "priceUsd": 2050.0},
+    ],
+    "eip155:42161": [
+        {"symbol": "ETH", "name": "Ethereum", "decimals": 18, "contractAddress": "native", "priceUsd": 2050.0},
+    ],
+    "eip155:10": [
+        {"symbol": "ETH", "name": "Ethereum", "decimals": 18, "contractAddress": "native", "priceUsd": 2050.0},
+    ],
+    "eip155:137": [
+        {"symbol": "POL", "name": "Polygon Ecosystem Token", "decimals": 18, "contractAddress": "native", "priceUsd": 0.45},
+    ],
+    "eip155:56": [
+        {"symbol": "BNB", "name": "BNB", "decimals": 18, "contractAddress": "native", "priceUsd": 620.0},
+    ],
+    "eip155:43114": [
+        {"symbol": "AVAX", "name": "Avalanche", "decimals": 18, "contractAddress": "native", "priceUsd": 32.0},
+    ],
+    SOLANA_MAINNET_CAIP2: [
+        {"symbol": "SOL", "name": "Solana", "decimals": 9, "contractAddress": "native", "priceUsd": 180.0},
+    ],
+    "near:testnet": [
+        {"symbol": "NEAR", "name": "NEAR", "decimals": 24, "contractAddress": "wrap.testnet", "priceUsd": 2.80},
+    ],
+    "near:mainnet": [
+        {"symbol": "NEAR", "name": "NEAR", "decimals": 24, "contractAddress": "wrap.near", "priceUsd": 2.80},
+    ],
+}
+
 FRIENDLY_CHAIN_NAMES: dict[str, str] = {
     "eip155:1": "Ethereum",
     "eip155:8453": "Base",
@@ -232,13 +284,31 @@ class CheckoutAdapter:
             })
         return catalog
 
+    def find_payment_asset(self, chain_id: str, token_query: str) -> dict[str, Any] | None:
+        """Finds matching stablecoin or intent-routable asset metadata by symbol or address."""
+        q = token_query.strip().lower()
+        # 1. Check supported stablecoins
+        for tok in SUPPORTED_STABLECOINS.get(chain_id, []):
+            if tok["symbol"].lower() == q or tok["contractAddress"].lower() == q:
+                res = dict(tok)
+                res["isStable"] = True
+                res["priceUsd"] = 1.0
+                return res
+
+        # 2. Check intent-routable assets
+        for tok in INTENT_ROUTABLE_ASSETS.get(chain_id, []):
+            if tok["symbol"].lower() == q or tok["contractAddress"].lower() == q:
+                res = dict(tok)
+                res["isStable"] = False
+                return res
+
+        return None
+
     def find_stablecoin(self, chain_id: str, token_query: str) -> dict[str, Any] | None:
         """Finds matching stablecoin metadata by symbol or contract address."""
-        tokens = SUPPORTED_STABLECOINS.get(chain_id, [])
-        q = token_query.strip().lower()
-        for tok in tokens:
-            if tok["symbol"].lower() == q or tok["contractAddress"].lower() == q:
-                return tok
+        asset = self.find_payment_asset(chain_id, token_query)
+        if asset and asset.get("isStable"):
+            return asset
         return None
 
     async def get_pricing_and_availability(self, name: str) -> dict[str, Any]:
@@ -258,6 +328,7 @@ class CheckoutAdapter:
             "available": available,
             "priceUsd": usd_price,
             "priceMicroUnits": str(micro_units),
+            "settlementAsset": "USDC on NEAR Protocol (nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760)",
             "supportedChains": self.get_supported_stables_catalog(),
         }
 
@@ -271,22 +342,24 @@ class CheckoutAdapter:
     ) -> dict[str, Any]:
         """
         Creates a new domain checkout session with a deposit address
-        for stablecoin payment from any supported chain.
+        for stablecoin or intent-routable asset payment from any supported chain.
         """
         clean_name = validate_and_normalize_name(name)
         ns, ref, _ = canonicalize_chain_key(chain)
         norm_chain = f"{ns}:{ref}"
 
-        if norm_chain not in SUPPORTED_STABLECOINS:
+        if norm_chain not in SUPPORTED_STABLECOINS and norm_chain not in INTENT_ROUTABLE_ASSETS:
             raise ValueError(
                 f"Unsupported payment chain '{norm_chain}'. Supported chains: {list(SUPPORTED_STABLECOINS.keys())}"
             )
 
-        stable_meta = self.find_stablecoin(norm_chain, token)
-        if not stable_meta:
-            supported_syms = [t["symbol"] for t in SUPPORTED_STABLECOINS[norm_chain]]
+        asset_meta = self.find_payment_asset(norm_chain, token)
+        if not asset_meta:
+            supported_syms = [t["symbol"] for t in SUPPORTED_STABLECOINS.get(norm_chain, [])]
+            intent_syms = [t["symbol"] for t in INTENT_ROUTABLE_ASSETS.get(norm_chain, [])]
             raise ValueError(
-                f"Unsupported stablecoin '{token}' on {norm_chain}. Accepted stablecoins: {supported_syms}"
+                f"Unsupported payment asset '{token}' on {norm_chain}. "
+                f"Accepted stablecoins: {supported_syms}; or intent-routable assets: {intent_syms}"
             )
 
         # Ensure name is available
@@ -295,13 +368,19 @@ class CheckoutAdapter:
             raise ValueError(f"Domain '{clean_name}' is already registered and not available.")
 
         micro_units, usd_price = calculate_price_micro(clean_name)
-        decimals = stable_meta["decimals"]
+        decimals = asset_meta["decimals"]
+        is_stable = asset_meta["isStable"]
 
-        # Scale amount to token decimals (18 for BSC, 6 for others)
-        if decimals == 18:
-            amount_base = micro_units * 10**12
+        if is_stable:
+            settlement_type = "DIRECT_STABLECOIN"
+            amount_base = micro_units if decimals == 6 else int(micro_units * 10 ** (decimals - 6))
+            amount_formatted = f"{usd_price:.2f} {asset_meta['symbol']}"
         else:
-            amount_base = micro_units
+            settlement_type = "INTENT_SWAP_SETTLEMENT"
+            token_price = asset_meta.get("priceUsd", 1.0)
+            token_qty = round(usd_price / token_price, 6)
+            amount_base = int(round(token_qty * 10**decimals))
+            amount_formatted = f"{token_qty} {asset_meta['symbol']}"
 
         # Generate checkout session ID
         checkout_id = f"chk_{uuid.uuid4().hex[:16]}"
@@ -313,19 +392,32 @@ class CheckoutAdapter:
         if norm_chain.startswith("near:"):
             deposit_address = settings.REGISTRY_CONTRACT_ID
             deposit_memo = f'{{"name":"{clean_name}"}}'
-            instructions = (
-                f"Call ft_transfer_call on {stable_meta['contractAddress']} to "
-                f"'{deposit_address}' with amount {amount_base} and msg '{deposit_memo}'."
-            )
+            if is_stable:
+                instructions = (
+                    f"Call ft_transfer_call on {asset_meta['contractAddress']} to "
+                    f"'{deposit_address}' with amount {amount_base} and msg '{deposit_memo}'."
+                )
+            else:
+                instructions = (
+                    f"Transfer {amount_formatted} to '{deposit_address}'. "
+                    f"The Intent Router will swap to USDC on NEAR and register {clean_name} for {owner}."
+                )
         else:
             # Deterministic Chain Signatures deposit address tied to this checkout
             derived = self.cs_manager.derive_deposit_address(f"checkout-{checkout_id}", norm_chain)
             deposit_address = derived["depositAddress"]
-            instructions = (
-                f"Send exactly {usd_price:.2f} {stable_meta['symbol']} to "
-                f"{deposit_address} on {FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain)}. "
-                f"Domain {clean_name} will be claimed automatically for {owner} upon receipt."
-            )
+            if is_stable:
+                instructions = (
+                    f"Send exactly {usd_price:.2f} {asset_meta['symbol']} to "
+                    f"{deposit_address} on {FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain)}. "
+                    f"Domain {clean_name} will be claimed automatically for {owner} upon receipt."
+                )
+            else:
+                instructions = (
+                    f"Send {amount_formatted} (~${usd_price:.2f} USD) to "
+                    f"{deposit_address} on {FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain)}. "
+                    f"The Intent Router will swap and settle {usd_price:.2f} USDC on NEAR to claim {clean_name} for {owner}."
+                )
 
         session = {
             "checkoutId": checkout_id,
@@ -333,17 +425,21 @@ class CheckoutAdapter:
             "owner": owner,
             "chain": norm_chain,
             "chainName": FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain),
-            "token": stable_meta["symbol"],
-            "tokenContract": stable_meta["contractAddress"],
+            "token": asset_meta["symbol"],
+            "tokenContract": asset_meta["contractAddress"],
             "tokenDecimals": decimals,
+            "isStable": is_stable,
+            "settlementType": settlement_type,
+            "settlementAsset": "USDC (NEAR Protocol)",
+            "settlementAmountMicro": str(micro_units),
             "priceUsd": usd_price,
             "amount": str(amount_base),
-            "amountFormatted": f"{usd_price:.2f} {stable_meta['symbol']}",
+            "amountFormatted": amount_formatted,
             "depositAddress": deposit_address,
             "depositMemo": deposit_memo,
             "refundTo": refund_to,
             "status": "PENDING_PAYMENT",  # PENDING_PAYMENT, PROCESSING, COMPLETED, FAILED, REFUNDED
-            "paymentRef": f"{norm_chain}:{stable_meta['symbol']}:{checkout_id}",
+            "paymentRef": f"{norm_chain}:{asset_meta['symbol']}:{checkout_id}",
             "nearTxHash": None,
             "instructions": instructions,
             "createdAt": now,
