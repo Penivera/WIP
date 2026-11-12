@@ -55,11 +55,55 @@ fn claim_connect_resolve_happy_path() {
         SOL_ADDR.to_vec(),
         vec![4, 5, 6],
     );
-    let r = c.resolve_direct("peni.uni".into(), "SOLANA:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d".into());
+    let r = c.resolve_direct(
+        "peni.uni".into(),
+        "SOLANA:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d".into(),
+    );
     assert_eq!(r.address, SOL_ADDR.to_vec());
     assert_eq!(r.coin_type, 501);
+
+    let near_addr = b"alice.testnet".to_vec();
+    c.connect_chain(
+        "peni.uni".into(),
+        "near:testnet".into(),
+        near_addr.clone(),
+        vec![7, 8, 9],
+    );
+    let r = c.resolve_direct("peni.uni".into(), "near:testnet".into());
+    assert_eq!(r.address, near_addr);
+    assert_eq!(r.coin_type, 397);
+
     assert_eq!(c.records_of(accounts(0), 0, 10).len(), 1);
     assert_eq!(c.owner_of("peni.uni".into()), Some(accounts(0)));
+}
+
+#[test]
+fn malformed_chain_keys_and_addresses_rejected() {
+    testing_env!(owner_ctx());
+    let mut c = contract();
+    c.claim("peni".into());
+
+    // Bad chain key
+    let bad_chain = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.connect_chain(
+            "peni.uni".into(),
+            "unknown:1".into(),
+            EVM_ADDR.to_vec(),
+            vec![1],
+        );
+    }));
+    assert!(bad_chain.is_err(), "unknown chain namespace must panic");
+
+    // Bad address length for EVM (should be 20 bytes, give 32)
+    let bad_addr = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.connect_chain(
+            "peni.uni".into(),
+            "eip155:1".into(),
+            SOL_ADDR.to_vec(),
+            vec![1],
+        );
+    }));
+    assert!(bad_addr.is_err(), "wrong address length for EVM must panic");
 }
 
 #[test]
@@ -67,8 +111,18 @@ fn unconnected_chain_is_honest_no_record() {
     testing_env!(owner_ctx());
     let mut c = contract();
     c.claim("peni".into());
-    c.connect_chain("peni.uni".into(), "eip155:1".into(), EVM_ADDR.to_vec(), vec![1]);
-    assert!(c.get_record("peni.uni".into()).unwrap().chains.get("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d").is_none());
+    c.connect_chain(
+        "peni.uni".into(),
+        "eip155:1".into(),
+        EVM_ADDR.to_vec(),
+        vec![1],
+    );
+    assert!(c
+        .get_record("peni.uni".into())
+        .unwrap()
+        .chains
+        .get("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+        .is_none());
     assert_eq!(c.owner_of("ghost.uni".into()), None);
 }
 
@@ -80,7 +134,12 @@ fn only_owner_can_connect_and_transfer() {
     testing_env!(other_ctx());
     let mut c2 = c;
     let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        c2.connect_chain("peni.uni".into(), "eip155:1".into(), EVM_ADDR.to_vec(), vec![1]);
+        c2.connect_chain(
+            "peni.uni".into(),
+            "eip155:1".into(),
+            EVM_ADDR.to_vec(),
+            vec![1],
+        );
     }));
     assert!(err.is_err(), "non-owner connect must panic");
 }
@@ -90,7 +149,12 @@ fn transfer_bumps_generation_and_invalidates_policy_queue() {
     testing_env!(owner_ctx());
     let mut c = contract();
     c.claim("peni".into());
-    c.connect_chain("peni.uni".into(), "eip155:1".into(), EVM_ADDR.to_vec(), vec![1, 2, 3]);
+    c.connect_chain(
+        "peni.uni".into(),
+        "eip155:1".into(),
+        EVM_ADDR.to_vec(),
+        vec![1, 2, 3],
+    );
 
     let policy = ReceivePolicy {
         force_default: true,
@@ -110,9 +174,19 @@ fn transfer_bumps_generation_and_invalidates_policy_queue() {
     assert_eq!(record.generation, 2);
     assert!(record.pending.is_none());
     let r = c.resolve_direct("peni.uni".into(), "eip155:1".into());
-    assert_eq!(r.generation, 2, "stale-proof generation must bump on transfer");
-    assert_eq!(c.records_of(accounts(0), 0, 10).len(), 0, "old owner index must be cleared");
-    assert_eq!(c.records_of(accounts(2), 0, 10), vec!["peni.uni".to_string()]);
+    assert_eq!(
+        r.generation, 2,
+        "stale-proof generation must bump on transfer"
+    );
+    assert_eq!(
+        c.records_of(accounts(0), 0, 10).len(),
+        0,
+        "old owner index must be cleared"
+    );
+    assert_eq!(
+        c.records_of(accounts(2), 0, 10),
+        vec!["peni.uni".to_string()]
+    );
 }
 
 #[test]
@@ -131,7 +205,10 @@ fn policy_change_applies_only_after_delay() {
         payout: None,
     };
     let effective = c.set_receive_policy("peni.uni".into(), Some(policy));
-    assert!(c.get_policy("peni.uni".into()).is_none(), "policy must not be active before delay");
+    assert!(
+        c.get_policy("peni.uni".into()).is_none(),
+        "policy must not be active before delay"
+    );
 
     let early = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         c.apply_pending_change("peni.uni".into());
@@ -139,7 +216,9 @@ fn policy_change_applies_only_after_delay() {
     assert!(early.is_err(), "early apply must panic with CHANGE_PENDING");
 
     let mut b = VMContextBuilder::new();
-    b.predecessor_account_id(accounts(0)).current_account_id(accounts(1)).block_timestamp(effective * 1_000_000 + 1);
+    b.predecessor_account_id(accounts(0))
+        .current_account_id(accounts(1))
+        .block_timestamp(effective * 1_000_000 + 1);
     testing_env!(b.build());
     c.apply_pending_change("peni.uni".into());
     let active = c.get_policy("peni.uni".into()).unwrap();
@@ -166,7 +245,8 @@ fn policy_cancel_and_clear_queue() {
 
     c.set_receive_policy("peni.uni".into(), None);
     let mut b = VMContextBuilder::new();
-    b.predecessor_account_id(accounts(0)).current_account_id(accounts(1))
+    b.predecessor_account_id(accounts(0))
+        .current_account_id(accounts(1))
         .block_timestamp(near_sdk::env::block_timestamp() + 61_000_000_000);
     testing_env!(b.build());
     c.apply_pending_change("peni.uni".into());
@@ -198,38 +278,81 @@ fn reserved_and_malformed_names_rejected_by_contract_path() {
     let mut c = contract();
     let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim("admin".into())));
     assert!(t.is_err());
-    let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        c.claim("x".into())
-    }));
+    let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim("x".into())));
     assert!(t.is_err());
     let name = c.claim("Peni.Uni".into());
-    assert_eq!(name, "peni.uni", "suffix + case normalization must fold to one record");
+    assert_eq!(
+        name, "peni.uni",
+        "suffix + case normalization must fold to one record"
+    );
     let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim("peni".into())));
     assert!(t.is_err(), "double claim must panic NAME_TAKEN");
 }
 
 #[test]
-fn repro_lookupmap_cache() {
-    use near_sdk::store::LookupMap;
-    let mut m: LookupMap<String, u32> = LookupMap::new(b"x".to_vec());
-    let k = "a".to_string();
-    assert!(!m.contains_key(&k));
-    m.insert(k.clone(), 1);
-    assert!(m.get_mut(&k).is_some(), "get_mut must see inserted value");
-    m.remove(&k);
-    assert!(!m.contains_key(&k));
-    m.insert(k.clone(), 2);
-    assert!(m.get_mut(&k).is_some());
-    assert!(!m.contains_key(&"ghost".to_string()));
-    m.insert("ghost".to_string(), 3);
-    assert!(m.get_mut(&"ghost".to_string()).is_some());
-}
-
-#[test]
-fn repro_contract_claim_then_connect() {
+fn standard_aligned_method_names() {
     testing_env!(owner_ctx());
     let mut c = contract();
-    c.claim("zzz".into());
-    testing_env!(owner_ctx());
-    c.connect_chain("zzz.uni".into(), "eip155:1".into(), EVM_ADDR.to_vec(), vec![1]);
+    c.claim("peni".into());
+
+    // 1. set_record
+    c.set_record(
+        "peni.uni".into(),
+        "eip155:1".into(),
+        EVM_ADDR.to_vec(),
+        vec![1, 2, 3],
+    );
+
+    // 2. get_name & get_record
+    let record = c.get_name("peni.uni".into()).unwrap();
+    assert_eq!(record.owner, accounts(0));
+    assert!(record.chains.contains_key("eip155:1"));
+
+    // 3. names_of (with and without pagination)
+    assert_eq!(
+        c.names_of(accounts(0), None, None),
+        vec!["peni.uni".to_string()]
+    );
+    assert_eq!(
+        c.names_of(accounts(0), Some(0), Some(5)),
+        vec!["peni.uni".to_string()]
+    );
+    assert_eq!(
+        c.names_of(accounts(0), Some(1), Some(5)),
+        Vec::<String>::new()
+    );
+
+    // 4. set_policy & cancel_pending_policy
+    let policy = ReceivePolicy {
+        force_default: true,
+        default: Some(Destination::Asset {
+            asset: "eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".into(),
+            chain: "eip155:1".into(),
+            address: EVM_ADDR.to_vec(),
+        }),
+        payout: None,
+    };
+    c.set_policy("peni.uni".into(), Some(policy.clone()));
+    assert!(c.get_pending_change("peni.uni".into()).is_some());
+    c.cancel_pending_policy("peni.uni".into());
+    assert!(c.get_pending_change("peni.uni".into()).is_none());
+
+    // 5. set_policy & apply_pending_policy after delay
+    let effective = c.set_policy("peni.uni".into(), Some(policy));
+    let mut b = VMContextBuilder::new();
+    b.predecessor_account_id(accounts(0))
+        .current_account_id(accounts(1))
+        .block_timestamp(effective * 1_000_000 + 1);
+    testing_env!(b.build());
+    c.apply_pending_policy("peni.uni".into());
+    assert!(c.get_policy("peni.uni".into()).unwrap().force_default);
+
+    // 6. remove_record
+    c.remove_record("peni.uni".into(), "eip155:1".into());
+    assert!(c
+        .get_record("peni.uni".into())
+        .unwrap()
+        .chains
+        .get("eip155:1")
+        .is_none());
 }

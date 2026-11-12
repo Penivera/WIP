@@ -1,6 +1,6 @@
-use near_sdk::store::{IterableSet, LookupMap};
 use near_sdk::serde::Serialize;
 use near_sdk::serde_json::json;
+use near_sdk::store::{IterableSet, LookupMap};
 use near_sdk::{env, near, require, AccountId, PanicOnDefault};
 
 pub const NAME_MIN: usize = 3;
@@ -8,8 +8,22 @@ pub const NAME_MAX: usize = 32;
 pub const DEFAULT_DELAY_SECS: u64 = 3600;
 
 const RESERVED: [&str; 16] = [
-    "admin", "root", "system", "near", "uni", "registry", "registrar", "www", "api", "app",
-    "support", "help", "security", "official", "mail", "null",
+    "admin",
+    "root",
+    "system",
+    "near",
+    "uni",
+    "registry",
+    "registrar",
+    "www",
+    "api",
+    "app",
+    "support",
+    "help",
+    "security",
+    "official",
+    "mail",
+    "null",
 ];
 
 pub const NS_EIP155: &str = "eip155";
@@ -99,13 +113,34 @@ pub struct ResolvedRecord {
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum EventData {
-    NameClaimed { name: String, owner: String },
-    ChainConnected { name: String, chain: String, address: String },
-    ChainDisconnected { name: String, chain: String },
-    PolicyChangeQueued { name: String, effective_at_ms: u64 },
-    PolicyChanged { name: String },
-    PolicyChangeCancelled { name: String },
-    NameTransferred { name: String, from: String, to: String },
+    NameClaimed {
+        name: String,
+        owner: String,
+    },
+    ChainConnected {
+        name: String,
+        chain: String,
+        address: String,
+    },
+    ChainDisconnected {
+        name: String,
+        chain: String,
+    },
+    PolicyChangeQueued {
+        name: String,
+        effective_at_ms: u64,
+    },
+    PolicyChanged {
+        name: String,
+    },
+    PolicyChangeCancelled {
+        name: String,
+    },
+    NameTransferred {
+        name: String,
+        from: String,
+        to: String,
+    },
 }
 
 fn emit(event: &str, data: &impl Serialize) {
@@ -137,7 +172,7 @@ pub fn validate_name_checked(raw: &str) -> ValResult<String> {
     if label.starts_with('-') || label.ends_with('-') || label.contains("--") {
         return Err(("NAME_INVALID", "bad '-' placement".into()));
     }
-    if RESERVED.contains(&label.as_ref()) {
+    if RESERVED.contains(&label) {
         return Err(("NAME_INVALID", "reserved name".into()));
     }
     Ok(label.to_string())
@@ -145,6 +180,15 @@ pub fn validate_name_checked(raw: &str) -> ValResult<String> {
 
 pub fn validate_name(raw: &str) -> String {
     validate_name_checked(raw).unwrap_or_else(|(code, detail)| panic_code(code, &detail))
+}
+
+pub fn canonical_name_checked(raw: &str) -> ValResult<String> {
+    let label = validate_name_checked(raw)?;
+    Ok(format!("{label}.uni"))
+}
+
+pub fn canonical_name(raw: &str) -> String {
+    canonical_name_checked(raw).unwrap_or_else(|(code, detail)| panic_code(code, &detail))
 }
 
 pub fn parse_chain_key_checked(chain: &str) -> ValResult<(String, String, u64)> {
@@ -157,9 +201,12 @@ pub fn parse_chain_key_checked(chain: &str) -> ValResult<(String, String, u64)> 
     }
     let coin_type = match ns.as_str() {
         NS_EIP155 => {
-            let id: u64 = rest
-                .parse()
-                .map_err(|_| ("CHAIN_KEY_INVALID", "eip155 reference must be numeric".into()))?;
+            let id: u64 = rest.parse().map_err(|_| {
+                (
+                    "CHAIN_KEY_INVALID",
+                    "eip155 reference must be numeric".into(),
+                )
+            })?;
             if id >= EVM_FLAG {
                 return Err(("CHAIN_KEY_INVALID", "chainId too large".into()));
             }
@@ -249,9 +296,15 @@ pub fn validate_address(ns: &str, address: &[u8]) {
 pub fn validate_policy_checked(policy: &ReceivePolicy) -> ValResult<()> {
     match (&policy.default, &policy.payout) {
         (None, None) => Err(("POLICY_INVALID", "must set default or payout".into())),
-        (Some(Destination::Asset { chain, address, asset }), _) => {
-            let (ns, _, _) = parse_chain_key_checked(chain)
-                .map_err(|(c, d)| (c, d))?;
+        (
+            Some(Destination::Asset {
+                chain,
+                address,
+                asset,
+            }),
+            _,
+        ) => {
+            let (ns, _, _) = parse_chain_key_checked(chain)?;
             validate_address_checked(&ns, address)?;
             if asset.is_empty() {
                 return Err(("POLICY_INVALID", "empty asset id".into()));
@@ -261,15 +314,27 @@ pub fn validate_policy_checked(policy: &ReceivePolicy) -> ValResult<()> {
         (Some(Destination::Payout { .. }), _) => {
             Err(("POLICY_INVALID", "default route must be Asset".into()))
         }
-        (None, Some(Destination::Payout { provider, reference })) => {
+        (
+            None,
+            Some(Destination::Payout {
+                provider,
+                reference,
+            }),
+        ) => {
             if provider.is_empty() || reference.is_empty() {
                 return Err((
                     "POLICY_INVALID",
                     "payout provider/reference must be non-empty".into(),
                 ));
             }
-            if !provider.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-                return Err(("POLICY_INVALID", "provider must be alphanumeric-dash".into()));
+            if !provider
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err((
+                    "POLICY_INVALID",
+                    "provider must be alphanumeric-dash".into(),
+                ));
             }
             Ok(())
         }
@@ -288,10 +353,7 @@ fn owner_prefix(owner: &AccountId) -> Vec<u8> {
 }
 
 fn require_owner(record: &Record) {
-    require!(
-        record.owner == env::predecessor_account_id(),
-        "NOT_OWNER"
-    );
+    require!(record.owner == env::predecessor_account_id(), "NOT_OWNER");
 }
 
 #[near(contract_state)]
@@ -318,8 +380,7 @@ impl Contract {
     }
 
     pub fn claim(&mut self, name: String) -> String {
-        let label = validate_name(&name);
-        let full = format!("{label}.uni");
+        let full = canonical_name(&name);
         if self.records.contains_key(&full) {
             panic_code("NAME_TAKEN", "");
         }
@@ -346,19 +407,16 @@ impl Contract {
         }
         emit(
             "NameClaimed",
-            &EventData::NameClaimed { name: full.clone(), owner: owner.to_string() },
+            &EventData::NameClaimed {
+                name: full.clone(),
+                owner: owner.to_string(),
+            },
         );
         full
     }
 
-    pub fn connect_chain(
-        &mut self,
-        name: String,
-        chain: String,
-        address: Vec<u8>,
-        proof: Vec<u8>,
-    ) {
-        let full = validate_name(&name);
+    pub fn set_record(&mut self, name: String, chain: String, address: Vec<u8>, proof: Vec<u8>) {
+        let full = canonical_name(&name);
         let (ns, rest, coin_type) = parse_chain_key(&chain);
         validate_address(&ns, &address);
         if proof.is_empty() {
@@ -390,8 +448,12 @@ impl Contract {
         );
     }
 
-    pub fn disconnect_chain(&mut self, name: String, chain: String) {
-        let full = validate_name(&name);
+    pub fn connect_chain(&mut self, name: String, chain: String, address: Vec<u8>, proof: Vec<u8>) {
+        self.set_record(name, chain, address, proof);
+    }
+
+    pub fn remove_record(&mut self, name: String, chain: String) {
+        let full = canonical_name(&name);
         let key = normalize_chain_key(&chain);
         let record = self
             .records
@@ -401,11 +463,21 @@ impl Contract {
         if record.chains.remove(&key).is_none() {
             panic_code("NO_RECORD", "");
         }
-        emit("ChainDisconnected", &EventData::ChainDisconnected { name: full, chain: key });
+        emit(
+            "ChainDisconnected",
+            &EventData::ChainDisconnected {
+                name: full,
+                chain: key,
+            },
+        );
     }
 
-    pub fn set_receive_policy(&mut self, name: String, policy: Option<ReceivePolicy>) -> u64 {
-        let full = validate_name(&name);
+    pub fn disconnect_chain(&mut self, name: String, chain: String) {
+        self.remove_record(name, chain);
+    }
+
+    pub fn set_policy(&mut self, name: String, policy: Option<ReceivePolicy>) -> u64 {
+        let full = canonical_name(&name);
         if let Some(p) = &policy {
             validate_policy(p);
         }
@@ -425,24 +497,40 @@ impl Contract {
         });
         emit(
             "PolicyChangeQueued",
-            &EventData::PolicyChangeQueued { name: full, effective_at_ms },
+            &EventData::PolicyChangeQueued {
+                name: full,
+                effective_at_ms,
+            },
         );
         effective_at_ms
     }
 
+    pub fn set_receive_policy(&mut self, name: String, policy: Option<ReceivePolicy>) -> u64 {
+        self.set_policy(name, policy)
+    }
+
+    pub fn apply_pending_policy(&mut self, name: String) {
+        self.apply_pending_change(name);
+    }
+
+    pub fn cancel_pending_policy(&mut self, name: String) {
+        self.cancel_pending_change(name);
+    }
+
     pub fn apply_pending_change(&mut self, name: String) {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         let record = self
             .records
             .get_mut(&full)
             .unwrap_or_else(|| panic_code("NAME_NOT_FOUND", ""));
-        let pending = match record.pending.take() {
+        let pending = match &record.pending {
             Some(p) => p,
             None => panic_code("NO_PENDING_CHANGE", ""),
         };
         if env::block_timestamp_ms() < pending.effective_at_ms {
             panic_code("CHANGE_PENDING", &pending.effective_at_ms.to_string());
         }
+        let pending = record.pending.take().unwrap();
         record.policy = match pending.kind {
             PendingChangeKind::Set(p) => Some(p),
             PendingChangeKind::Clear => None,
@@ -451,7 +539,7 @@ impl Contract {
     }
 
     pub fn cancel_pending_change(&mut self, name: String) {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         let record = self
             .records
             .get_mut(&full)
@@ -461,11 +549,14 @@ impl Contract {
             panic_code("NO_PENDING_CHANGE", "");
         }
         record.pending = None;
-        emit("PolicyChangeCancelled", &EventData::PolicyChangeCancelled { name: full });
+        emit(
+            "PolicyChangeCancelled",
+            &EventData::PolicyChangeCancelled { name: full },
+        );
     }
 
     pub fn transfer_name(&mut self, name: String, new_owner: AccountId) {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         let old_owner = {
             let record = self
                 .records
@@ -491,7 +582,7 @@ impl Contract {
                 if !set.remove(&full) {
                     panic_code("NAME_NOT_FOUND", "owner index missing name");
                 }
-                set.len() == 0
+                set.is_empty()
             }
             None => panic_code("NAME_NOT_FOUND", "owner index missing"),
         };
@@ -520,7 +611,7 @@ impl Contract {
     }
 
     pub fn resolve_direct(&self, name: String, chain: String) -> ResolvedRecord {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         let key = normalize_chain_key(&chain);
         let record = match self.records.get(&full) {
             Some(r) => r,
@@ -540,33 +631,50 @@ impl Contract {
     }
 
     pub fn get_record(&self, name: String) -> Option<Record> {
-        let full = validate_name(&name);
-        self.records.get(&full).map(|r| r.clone())
+        let full = canonical_name(&name);
+        self.records.get(&full).cloned()
+    }
+
+    pub fn get_name(&self, name: String) -> Option<Record> {
+        self.get_record(name)
     }
 
     pub fn get_policy(&self, name: String) -> Option<ReceivePolicy> {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         self.records.get(&full).and_then(|r| r.policy.clone())
     }
 
     pub fn get_pending_change(&self, name: String) -> Option<PendingChange> {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         self.records.get(&full).and_then(|r| r.pending.clone())
     }
 
     pub fn owner_of(&self, name: String) -> Option<AccountId> {
-        let full = validate_name(&name);
+        let full = canonical_name(&name);
         self.records.get(&full).map(|r| r.owner.clone())
     }
 
     pub fn is_name_available(&self, name: String) -> bool {
-        let label = validate_name(&name);
-        !self.records.contains_key(&format!("{label}.uni"))
+        let full = canonical_name(&name);
+        !self.records.contains_key(&full)
+    }
+
+    pub fn names_of(
+        &self,
+        account: AccountId,
+        skip: Option<usize>,
+        limit: Option<usize>,
+    ) -> Vec<String> {
+        let s = skip.unwrap_or(0);
+        let l = limit.unwrap_or(10).min(100);
+        match self.owner_names.get(&account) {
+            Some(set) => set.iter().skip(s).take(l).cloned().collect(),
+            None => vec![],
+        }
     }
 
     pub fn records_of(&self, owner: AccountId, skip: usize, limit: usize) -> Vec<String> {
-        let set = IterableSet::new(owner_prefix(&owner));
-        set.iter().skip(skip).take(limit.min(100)).cloned().collect()
+        self.names_of(owner, Some(skip), Some(limit))
     }
 }
 
@@ -581,7 +689,10 @@ mod tests {
         assert_eq!(validate_name_checked("  peni  ").unwrap(), "peni");
         assert_eq!(validate_name_checked("UPPER").unwrap(), "upper");
         for bad in ["ab", "-peni", "peni-", "pe--ni", "p ni", "admin", ""] {
-            assert!(validate_name_checked(bad).is_err(), "expected rejection of {bad:?}");
+            assert!(
+                validate_name_checked(bad).is_err(),
+                "expected rejection of {bad:?}"
+            );
         }
     }
 
@@ -590,15 +701,19 @@ mod tests {
         let (_, _, c) = parse_chain_key_checked("eip155:1").unwrap();
         assert_eq!(c, EVM_FLAG | 1);
         let (_, _, c) =
-            parse_chain_key_checked("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
-                .unwrap();
+            parse_chain_key_checked("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d").unwrap();
         assert_eq!(c, COIN_TYPE_SOLANA);
-        let (_, _, c) =
-            parse_chain_key_checked("bip122:000000000019d6689c085ae165831e93").unwrap();
+        let (_, _, c) = parse_chain_key_checked("bip122:000000000019d6689c085ae165831e93").unwrap();
         assert_eq!(c, COIN_TYPE_BIP122);
         let (_, _, c) = parse_chain_key_checked("near:testnet").unwrap();
         assert_eq!(c, COIN_TYPE_NEAR);
-        for bad in ["ethereum:1", "eip155:abc", "solana:short", "bip122:xyz", "near:devnet"] {
+        for bad in [
+            "ethereum:1",
+            "eip155:abc",
+            "solana:short",
+            "bip122:xyz",
+            "near:devnet",
+        ] {
             assert!(
                 parse_chain_key_checked(bad).is_err(),
                 "expected rejection of {bad:?}"
@@ -639,7 +754,11 @@ mod tests {
             }),
         };
         assert!(validate_policy_checked(&payout_policy).is_ok());
-        let empty = ReceivePolicy { force_default: false, default: None, payout: None };
+        let empty = ReceivePolicy {
+            force_default: false,
+            default: None,
+            payout: None,
+        };
         assert!(validate_policy_checked(&empty).is_err());
         let payout_as_default = ReceivePolicy {
             force_default: false,
