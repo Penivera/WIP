@@ -40,11 +40,12 @@
 }
 * { box-sizing: border-box; }
 
-/* Overlay: popup card pinned top-centre over the host page. */
-.scrim { position: fixed; inset: 0; z-index: 2147483000; background: rgba(15, 23, 42, 0.35); }
+/* Overlay: popup card pinned top-centre over the host page. The z-index sits high above
+   the host page but below the NEAR wallet chooser (100000000), which must open on top. */
+.scrim { position: fixed; inset: 0; z-index: 99999000; background: rgba(15, 23, 42, 0.35); }
 .scrim.clear { background: transparent; pointer-events: none; }
 .popup {
-  position: fixed; z-index: 2147483001; top: 16px; left: 50%; transform: translateX(-50%);
+  position: fixed; z-index: 99999001; top: 16px; left: 50%; transform: translateX(-50%);
   width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
   display: flex; flex-direction: column;
   background: var(--card); color: var(--ink);
