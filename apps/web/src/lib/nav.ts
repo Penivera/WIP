@@ -10,6 +10,7 @@ export type Screen =
   | "pay-details"
   | "pay-status"
   | "names"
+  | "claim"
   | "name"
   | "destination"
   | "wallets"

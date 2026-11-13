@@ -131,11 +131,24 @@ export function toConnectChainArgs(name: string, chain: string, address: string,
 
 /**
  * Message a wallet signs to prove it controls the address being connected.
- * The contract stores the signature but does not check it, and defines no
- * format, so this wording is ours until the contract developer fixes one.
+ * The contract stores the signature without checking it; the resolver checks
+ * it, so this must match `build_challenge_message` in resolver-py/proofs.py.
+ *
+ * `fullName` includes the suffix ("peni.uni"), `generation` is the record's
+ * current generation, and the address is the raw bytes as lowercase hex.
  */
-export function proofMessage(name: string, chain: string, address: string): string {
-  return `Universal Name: connect ${address} on ${normalizeChainKey(chain)} to "${name}"`;
+export function proofMessage(args: {
+  fullName: string;
+  owner: string;
+  chain: string;
+  address: string;
+  generation: number;
+}): string {
+  const chain = normalizeChainKey(args.chain);
+  const hex = addressToBytes(chain, args.address)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `unam-proof-v1|name=${args.fullName}|owner=${args.owner}|chain=${chain}|address=${hex}|generation=${args.generation}`;
 }
 
 /** Contract panics look like `CODE` or `CODE: detail`, wrapped in runtime text. */

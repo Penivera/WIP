@@ -107,14 +107,21 @@ export const registryWrite = {
 
   applyPolicy: (name: string) => send([{ method: CONTRACT_METHODS.applyPolicy, args: { name } }]),
 
-  /** Connects a wallet on a chain. `sign` asks that wallet to sign the proof message. */
+  /**
+   * Connects a wallet on a chain. `sign` asks that wallet to sign the proof
+   * message; `generation` is the name's current record generation.
+   */
   async setRecord(
     name: string,
     chain: string,
     address: string,
+    generation: number,
     sign: (message: string) => Promise<Uint8Array>,
   ): Promise<void> {
-    const proof = await sign(proofMessage(name, chain, address));
+    if (!nearAccount.value) throw new Error("Connect your NEAR wallet first.");
+    const proof = await sign(
+      proofMessage({ fullName: name + settings.suffix, owner: nearAccount.value, chain, address, generation }),
+    );
     await send([{ method: CONTRACT_METHODS.setRecord, args: toConnectChainArgs(name, chain, address, proof) }]);
   },
 };

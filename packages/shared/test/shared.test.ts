@@ -7,6 +7,7 @@ import {
   normalizeName,
   parseContractError,
   parseUnits,
+  proofMessage,
   toRawPolicy,
   type Payout,
   type RawRecord,
@@ -96,6 +97,14 @@ describe("policy and record mapping", () => {
       pending: { effective_at_ms: 99, policy: null },
       version: 3,
     });
+  });
+});
+
+describe("proof message", () => {
+  it("matches the resolver's challenge format", () => {
+    expect(
+      proofMessage({ fullName: "peni.uni", owner: "peni.testnet", chain: "EIP155:1", address: "0x2527D02599Ba641c19FEa793cD0F167589a0f10D", generation: 3 }),
+    ).toBe("unam-proof-v1|name=peni.uni|owner=peni.testnet|chain=eip155:1|address=2527d02599ba641c19fea793cd0f167589a0f10d|generation=3");
   });
 });
 

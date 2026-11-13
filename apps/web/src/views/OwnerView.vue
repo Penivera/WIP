@@ -12,7 +12,7 @@ import {
 } from "@unam/shared";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import PaymentCard from "../components/PaymentCard.vue";
-import { api } from "../lib/api";
+import { api, type CheckoutChain, type CheckoutSession } from "../lib/api";
 import { connectEvm, hasEvmWallet, signEvmMessage } from "../lib/evm";
 import { settings } from "../lib/config";
 import { changeDelayMs, connectNear, disconnectNear, explainError, initNear, nearAccount, registryWrite } from "../lib/near";
@@ -34,6 +34,14 @@ const notice = ref("");
 // claim
 const newName = ref("");
 const nameCheck = computed(() => (newName.value ? normalizeName(newName.value, settings.suffix) : null));
+
+const payChains = ref<CheckoutChain[]>([]);
+const payChain = ref("eip155:8453");
+const payToken = ref("USDC");
+const payTokens = computed(() => payChains.value.find((c) => c.chainId === payChain.value)?.tokens ?? []);
+const checkout = ref<CheckoutSession | null>(null);
+/** Outcome of the last claim, checked against the contract rather than the resolver's word. */
+const claimOutcome = ref<{ onChain: boolean; ref: string } | null>(null);
 
 // destination form
 const destChain = ref("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
@@ -67,6 +75,10 @@ function manage(n: string) {
 watch(screen, () => {
   notice.value = "";
   error.value = "";
+});
+
+watch(payChain, () => {
+  if (!payTokens.value.some((t) => t.symbol === payToken.value)) payToken.value = payTokens.value[0]?.symbol ?? "";
 });
 
 watch(destChain, () => {
@@ -146,20 +158,52 @@ async function run(label: string, fn: () => Promise<void>, success?: string) {
   }
 }
 
+/** Step 1: check the name is free and get the resolver's price for it. */
 const claim = () =>
-  run(
-    "claim",
-    async () => {
-      const n = nameCheck.value;
-      if (!n?.ok) throw new Error(n ? `Not a valid name: ${n.reason}.` : "Enter a name.");
-      if (await registry.getRecord(n.name)) throw new Error("That name is already taken.");
-      await registryWrite.claim(n.name);
+  run("claim", async () => {
+    const n = nameCheck.value;
+    if (!n?.ok) throw new Error(n ? `Not a valid name: ${n.reason}.` : "Enter a name.");
+    if (!nearAccount.value) throw new Error("Connect your NEAR wallet first.");
+    if (await registry.getRecord(n.name)) throw new Error("That name is already taken.");
+    claimOutcome.value = null;
+    checkout.value = await api.checkoutSession({
+      name: n.name,
+      owner: nearAccount.value,
+      chain: payChain.value,
+      token: payToken.value,
+    });
+    nav.go("claim");
+  });
+
+/**
+ * Step 2: complete the checkout. Real cross-chain payment is not offered: the
+ * resolver's deposit address is not swept by anything, so funds sent to it
+ * would be lost. The demo path asks the resolver to claim without payment,
+ * then checks the contract to see whether the name really was claimed.
+ */
+const completeClaim = () =>
+  run("complete", async () => {
+    const session = checkout.value;
+    const n = normalizeName(session?.name ?? "", settings.suffix);
+    if (!session || !n.ok) throw new Error("Start the claim again.");
+    const done = await api.checkoutSimulate(session.checkoutId);
+    const onChain = (await registry.getRecord(n.name))?.owner === nearAccount.value;
+    claimOutcome.value = { onChain, ref: done.nearTxHash ?? "" };
+    if (onChain) {
       newName.value = "";
       await loadNames();
-      manage(n.name);
-    },
-    "Name claimed.",
-  );
+    }
+  });
+
+/** Applies a waiting destination change through the resolver's admin key, then re-reads the contract. */
+const approveNow = () =>
+  run("apply", async () => {
+    await api.approvePolicy(selected.value);
+    await loadSelected();
+    if (record.value?.pending) {
+      throw new Error("The resolver accepted the request, but the change is still waiting on-chain. It needs the contract admin's key to apply it early.");
+    }
+  }, "Change applied.");
 
 const saveDestination = () =>
   run(
@@ -199,7 +243,9 @@ const addWallet = () =>
     "wallet",
     async () => {
       const account = await connectEvm();
-      await registryWrite.setRecord(selected.value, walletChain.value, account, (m) => signEvmMessage(account, m));
+      await registryWrite.setRecord(selected.value, walletChain.value, account, record.value?.version ?? 1, (m) =>
+        signEvmMessage(account, m),
+      );
       await loadSelected();
     },
     "Wallet connected to the name.",
@@ -207,7 +253,11 @@ const addWallet = () =>
 
 onMounted(async () => {
   try {
-    [changeDelayMs.value, tokens.value] = await Promise.all([registry.changeDelayMs(), api.tokens().catch(() => [])]);
+    [changeDelayMs.value, tokens.value, payChains.value] = await Promise.all([
+      registry.changeDelayMs(),
+      api.tokens().catch(() => []),
+      api.checkoutChains().catch(() => []),
+    ]);
     await initNear();
     await loadNames();
     if (!tokens.value.length) loadError.value = `Cannot reach the resolver at ${settings.apiUrl}, so the token list is empty.`;
@@ -251,9 +301,23 @@ onUnmounted(() => {
         <label for="un-new">3 to 32 characters: a-z, 0-9 and hyphens</label>
         <input id="un-new" v-model.trim="newName" placeholder="peni" autocomplete="off" autocapitalize="none" />
         <p v-if="nameCheck && !nameCheck.ok" class="muted" style="margin-top: 6px">Not valid: {{ nameCheck.reason }}.</p>
+        <div class="row">
+          <div>
+            <label for="un-pchain">Pay from</label>
+            <select id="un-pchain" v-model="payChain">
+              <option v-for="c in payChains" :key="c.chainId" :value="c.chainId">{{ c.chainName }}</option>
+            </select>
+          </div>
+          <div>
+            <label for="un-ptoken">Token</label>
+            <select id="un-ptoken" v-model="payToken">
+              <option v-for="t in payTokens" :key="t.symbol" :value="t.symbol">{{ t.symbol }}</option>
+            </select>
+          </div>
+        </div>
         <div class="actions">
-          <button type="submit" class="btn block" :disabled="!nameCheck?.ok || busy === 'claim'">
-            {{ busy === "claim" ? "Confirm in your wallet…" : "Claim" }}
+          <button type="submit" class="btn block" :disabled="!nameCheck?.ok || !payToken || busy === 'claim'">
+            {{ busy === "claim" ? "Checking…" : "See price" }}
           </button>
         </div>
       </form>
@@ -261,6 +325,49 @@ onUnmounted(() => {
     <div v-else class="actions">
       <button type="button" class="btn block" @click="run('connect', connectNear)">Connect NEAR wallet</button>
     </div>
+  </div>
+
+  <!-- Card: price and completion of a claim -->
+  <div v-else-if="screen === 'claim'">
+    <template v-if="checkout">
+      <h2>{{ checkout.name }}</h2>
+      <dl class="kv">
+        <dt>Owner</dt>
+        <dd class="mono">{{ checkout.owner }}</dd>
+        <dt>Price</dt>
+        <dd>${{ checkout.priceUsd.toFixed(2) }}</dd>
+        <template v-if="checkout.slippageBufferUsd">
+          <dt>Buffer</dt>
+          <dd>${{ checkout.slippageBufferUsd.toFixed(2) }} for cross-chain execution</dd>
+        </template>
+        <dt>Total</dt>
+        <dd>{{ checkout.amountFormatted }} on {{ checkout.chainName }}</dd>
+      </dl>
+
+      <template v-if="!claimOutcome">
+        <p class="note warn">
+          Demo only. Paying from another chain is not switched on here, because nothing collects funds from the
+          resolver's deposit address yet. This button asks the resolver to claim the name without a payment.
+        </p>
+        <div class="actions">
+          <button type="button" class="btn block" :disabled="busy === 'complete'" @click="completeClaim">
+            {{ busy === "complete" ? "Claiming…" : "Claim without payment (demo)" }}
+          </button>
+        </div>
+      </template>
+      <template v-else-if="claimOutcome.onChain">
+        <p class="note ok">Claimed. The contract now lists {{ checkout.name }} under your account.</p>
+        <div class="actions">
+          <button type="button" class="btn block" @click="manage(checkout.name.replace(settings.suffix, ''))">Manage this name</button>
+        </div>
+      </template>
+      <p v-else class="note bad">
+        Not claimed on-chain. The resolver reported success<span v-if="claimOutcome.ref"> ({{ claimOutcome.ref }})</span>,
+        but the contract has no record of this name for your account. The resolver is in mock mode or has no key
+        allowed to claim, so nothing was written.
+      </p>
+    </template>
+    <p v-else class="muted">Enter a name on the previous card first.</p>
   </div>
 
   <!-- Card: one name -->
@@ -317,7 +424,12 @@ onUnmounted(() => {
           It can be applied now.
           <button type="button" class="btn small" style="margin-left: 6px" :disabled="busy === 'apply'" @click="applyPending">Apply</button>
         </template>
-        <template v-else>Ready at {{ new Date(record.pending.effective_at_ms).toLocaleString() }}.</template>
+        <template v-else>
+          Ready at {{ new Date(record.pending.effective_at_ms).toLocaleString() }}.
+          <button type="button" class="btn secondary small" style="margin-left: 6px" :disabled="busy === 'apply'" @click="approveNow">
+            Apply now (admin)
+          </button>
+        </template>
       </div>
       <p v-else-if="changeDelayMs" class="muted" style="margin-top: 10px">
         Changes take effect {{ Math.round(changeDelayMs / 60000) }} minutes after saving, then need applying.

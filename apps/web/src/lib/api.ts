@@ -105,6 +105,33 @@ function applySwapDetails(p: Payment, d: SwapDetails | null | undefined): void {
   if (p.status === "SUCCESS" && d.amountOutFormatted) p.received = d.amountOutFormatted;
 }
 
+/** A chain and the tokens the resolver's checkout accepts for buying a name. */
+export interface CheckoutChain {
+  chainId: string;
+  chainName: string;
+  tokens: Array<{ symbol: string }>;
+}
+
+/** The resolver's quote for buying a name. Fields as the resolver names them. */
+export interface CheckoutSession {
+  checkoutId: string;
+  name: string;
+  owner: string;
+  chainName: string;
+  token: string;
+  priceUsd: number;
+  slippageBufferUsd: number;
+  totalBilledUsd: number;
+  amountFormatted: string;
+  status: string;
+  nearTxHash: string | null;
+}
+
+function detailMessage(body: any, fallback: string): string {
+  const d = body?.detail;
+  return String((typeof d === "string" ? d : d?.message ?? d?.error) ?? fallback);
+}
+
 export interface ResolveQuery {
   name: string;
   chain: string;
@@ -245,6 +272,48 @@ export const api = {
       paymentId: String(r.depositAddress),
       warnings: shown,
     };
+  },
+
+  /** Chains and tokens the resolver's checkout lists for buying a name. */
+  async checkoutChains(): Promise<CheckoutChain[]> {
+    const { status, body } = await request("/v1/checkout/chains");
+    return status === 200 && Array.isArray(body) ? body : [];
+  },
+
+  /** Opens a checkout session: the price of the name in the chosen token. */
+  async checkoutSession(q: { name: string; owner: string; chain: string; token: string }): Promise<CheckoutSession> {
+    const { status, body } = await request("/v1/checkout/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(q),
+    });
+    if (status !== 200) throw new Error(detailMessage(body, `Checkout failed (${status}).`));
+    return body as CheckoutSession;
+  },
+
+  /**
+   * Asks the resolver to complete the checkout without a payment. The resolver
+   * reports success even when it could not write to the contract, so callers
+   * must confirm the claim on-chain themselves.
+   */
+  async checkoutSimulate(checkoutId: string): Promise<CheckoutSession> {
+    const { status, body } = await request("/v1/checkout/simulate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ checkout_id: checkoutId, event: "SUCCESS" }),
+    });
+    if (status !== 200) throw new Error(detailMessage(body, `Checkout failed (${status}).`));
+    return body as CheckoutSession;
+  },
+
+  /** Asks the resolver's admin key to apply a queued destination change now. */
+  async approvePolicy(name: string): Promise<void> {
+    const { status, body } = await request("/v1/admin/approve-policy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (status !== 200) throw new Error(detailMessage(body, `Approval failed (${status}).`));
   },
 
   /** Tells the resolver (and 1Click) about the deposit transaction. */

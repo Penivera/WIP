@@ -12,6 +12,7 @@ const TITLES: Record<Screen, string> = {
   "pay-details": "Payment details",
   "pay-status": "Payment status",
   names: "My names",
+  claim: "Claim a name",
   name: "Manage name",
   destination: "What you receive",
   wallets: "Direct wallets",
