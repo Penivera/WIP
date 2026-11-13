@@ -43,3 +43,8 @@ Thumbs.db
 !.vscode/extensions.json
 session*.md
 PROMPT.md
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
