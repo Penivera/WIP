@@ -69,6 +69,21 @@ p.lead { color: var(--muted); }
 label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
 input, select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font: inherit; font-size: 16px; }
 input[type="checkbox"] { width: auto; margin-right: 8px; }
+/* Address field with a wallet button inside it (AddressInput.vue). */
+.field { position: relative; }
+.field.full input { padding-right: 132px; }
+.field.mini input { padding-right: 44px; }
+.field .inl {
+  position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+  height: calc(100% - 10px); min-width: 30px; padding: 0 10px;
+  border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-ink);
+  font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer;
+}
+.field.mini .inl { padding: 0; width: 30px; font-size: 18px; line-height: 1; }
+.field .inl:disabled { opacity: 0.6; cursor: default; }
+@media (prefers-reduced-motion: no-preference) {
+  .field .inl { transition: width 0.12s ease, padding 0.12s ease; }
+}
 .row { display: flex; gap: 10px; }
 .row > * { flex: 1; min-width: 0; }
 button.btn { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer; }

@@ -10,6 +10,7 @@ import {
 } from "@unam/shared";
 import QRCode from "qrcode";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import AddressInput from "../components/AddressInput.vue";
 import PaymentCard from "../components/PaymentCard.vue";
 import { api } from "../lib/api";
 import { connectEvm, hasEvmWallet, sendEvmPayment } from "../lib/evm";
@@ -115,16 +116,6 @@ async function recordDeposit(txHash: string) {
   payment.value = { ...payment.value, txHash, status: "KNOWN_DEPOSIT_TX" };
   nav.go("pay-status");
   await api.reportDeposit(r.address, txHash, r.memo);
-}
-
-async function connect() {
-  error.value = "";
-  try {
-    evmAccount.value = await connectEvm();
-    if (isEvm.value && !refundAddress.value) refundAddress.value = evmAccount.value;
-  } catch (err) {
-    error.value = (err as Error).message;
-  }
 }
 
 async function getDetails() {
@@ -264,13 +255,10 @@ onUnmounted(() => {
     <input id="un-amount" v-model.trim="amount" inputmode="decimal" placeholder="2.00" required />
 
     <label for="un-refund">Refund address on {{ chainInfo?.name }}, used if the payment can't complete</label>
-    <input id="un-refund" v-model.trim="refundAddress" class="mono" placeholder="Your own address on this chain" autocomplete="off" required />
+    <AddressInput id="un-refund" v-model="refundAddress" :chain="chain" placeholder="Your own address on this chain" required />
     <p v-if="refundAddress && !refundOk" class="muted" style="margin-top: 6px">
       Not a valid {{ chainInfo?.name }} address.
     </p>
-    <div v-if="isEvm && hasEvmWallet() && !evmAccount" class="actions" style="margin-top: 8px">
-      <button type="button" class="btn secondary small" @click="connect">Use my wallet's address</button>
-    </div>
 
     <div class="actions">
       <button type="submit" class="btn block" :disabled="busy || !name || !amount || !refundOk || !tokenInfo">

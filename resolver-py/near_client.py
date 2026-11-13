@@ -259,7 +259,8 @@ class NearContractClient:
                     "attached-deposit",
                     "0 NEAR",
                     "sign-as",
-                    "shedasolution.testnet",
+                    # The live contract's relayer and admin is the contract account itself.
+                    settings.REGISTRY_CONTRACT_ID,
                     "network-config",
                     "testnet",
                     "sign-with-keychain",

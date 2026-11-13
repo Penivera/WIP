@@ -11,6 +11,7 @@ import {
   type TokenInfo,
 } from "@unam/shared";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import AddressInput from "../components/AddressInput.vue";
 import PaymentCard from "../components/PaymentCard.vue";
 import { api, type CheckoutChain, type CheckoutSession } from "../lib/api";
 import { connectEvm, hasEvmWallet, signEvmMessage } from "../lib/evm";
@@ -461,7 +462,7 @@ onUnmounted(() => {
           {{ payoutType === "bank" ? "Provider's deposit address (stands in for a real off-ramp)" : "Your address" }}
           on {{ chainName(destChain) }}
         </label>
-        <input id="un-daddr" v-model.trim="destAddress" class="mono" autocomplete="off" />
+        <AddressInput id="un-daddr" v-model="destAddress" :chain="destChain" :wallet="payoutType === 'crypto'" />
         <p v-if="destAddress && !destAddressOk" class="muted" style="margin-top: 6px">Not a valid {{ chainName(destChain) }} address.</p>
 
         <div v-if="payoutType === 'bank'" class="row">
