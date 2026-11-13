@@ -264,7 +264,6 @@ class NearContractClient:
                     "network-config",
                     "testnet",
                     "sign-with-plaintext-private-key",
-                    settings.ADMIN_PUBLIC_KEY,
                     settings.ADMIN_PRIVATE_KEY,
                     "send",
                 ]
@@ -336,7 +335,6 @@ class NearContractClient:
                     "network-config",
                     "testnet",
                     "sign-with-plaintext-private-key",
-                    settings.ADMIN_PUBLIC_KEY,
                     settings.ADMIN_PRIVATE_KEY,
                     "send",
                 ]
