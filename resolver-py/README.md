@@ -44,3 +44,7 @@ Backend orchestration service for Universal Name (`.uni`). Queries `unam-registr
 - `GET /v1/cs/derive?name=peni.uni&chain=eip155:1` — Deterministically derives a NEAR Chain Signatures deposit address.
 - `GET /v1/dashboard/{name}` — Returns tracked incoming payments and MPC sweep audit logs for `{name}`.
 - `POST /v1/demo/transition` — Simulates terminal payment states (`SUCCESS`, `REFUNDED`, `OFFRAMP_REJECT`) for demo flows.
+
+## License
+
+This project is licensed under the **GNU General Public License Version 2** (`GPL-2.0-only`). See [LICENSE](file:///home/peni/Projects/wip/LICENSE).

@@ -305,3 +305,65 @@ class NearContractClient:
             "owner": owner,
             "payment_ref": payment_ref,
         }
+
+    async def admin_approve_pending_policy(self, name: str) -> dict:
+        """
+        Admin approves a queued destination/policy change, bypassing the time delay.
+        In live testnet mode, executes using admin unam-registry.testnet.
+        In mock mode, applies pending policy directly.
+        """
+        clean_name = name.strip().lower()
+        if not settings.USE_MOCK_CONTRACT:
+            try:
+                cmd = [
+                    "near",
+                    "contract",
+                    "call-function",
+                    "as-transaction",
+                    settings.REGISTRY_CONTRACT_ID,
+                    "admin_approve_pending_policy",
+                    "json-args",
+                    json.dumps({"name": clean_name}),
+                    "prepaid-gas",
+                    "100.0 Tgas",
+                    "attached-deposit",
+                    "0 NEAR",
+                    "sign-as",
+                    settings.REGISTRY_CONTRACT_ID,
+                    "network-config",
+                    "testnet",
+                    "sign-with-keychain",
+                    "send",
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                out_text = stdout.decode()
+                if proc.returncode == 0:
+                    tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
+                    tx_hash = tx_match.group(1) if tx_match else f"tx_{int(time.time())}"
+                    logger.info(f"Live admin_approve_pending_policy succeeded for {clean_name}: Tx {tx_hash}")
+                    return {
+                        "status": "APPROVED",
+                        "tx_hash": tx_hash,
+                        "name": clean_name,
+                    }
+                else:
+                    logger.warning(f"Live admin_approve returned {proc.returncode}: {out_text} {stderr.decode()}")
+            except Exception as exc:
+                logger.error(f"Error calling live admin_approve: {exc}")
+
+        # Mock mode fallback
+        rec = MOCK_CONTRACT_RECORDS.get(clean_name)
+        if not rec or not rec.get("pending"):
+            raise ValueError("NO_PENDING_CHANGE")
+        pending = rec.pop("pending")
+        rec["policy"] = pending.get("policy")
+        return {
+            "status": "APPROVED",
+            "tx_hash": f"sim_approve_{int(time.time())}",
+            "name": clean_name,
+        }

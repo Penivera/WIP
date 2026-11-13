@@ -226,6 +226,55 @@ fn policy_change_applies_only_after_delay() {
 }
 
 #[test]
+fn admin_approve_queued_policy_change() {
+    testing_env!(owner_ctx());
+    let mut c = contract();
+    c.claim("adminapp.uni".into());
+
+    let policy = ReceivePolicy {
+        force_default: true,
+        default: Some(Destination::Asset {
+            asset: "eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".into(),
+            chain: "eip155:1".into(),
+            address: EVM_ADDR.to_vec(),
+        }),
+        payout: None,
+    };
+    c.set_policy("adminapp.uni".into(), Some(policy));
+    assert!(c.get_policy("adminapp.uni".into()).is_none());
+    assert!(c.get_pending_change("adminapp.uni".into()).is_some());
+
+    // 1. Non-admin caller fails with NOT_ADMIN
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(accounts(3))
+        .current_account_id(accounts(1))
+        .build());
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_approve_pending_policy("adminapp.uni".into());
+    }));
+    assert!(err.is_err(), "non-admin caller must fail");
+
+    // 2. Admin calls before delay expires -> immediately approved and active
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(accounts(0)) // accounts(0) is admin
+        .current_account_id(accounts(1))
+        .build());
+    c.admin_approve_pending_policy("adminapp.uni".into());
+
+    let active = c
+        .get_policy("adminapp.uni".into())
+        .expect("policy must be active");
+    assert!(active.force_default);
+    assert!(c.get_pending_change("adminapp.uni".into()).is_none());
+
+    // 3. Calling when no change is pending fails with NO_PENDING_CHANGE
+    let err_nopending = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_approve_pending_policy("adminapp.uni".into());
+    }));
+    assert!(err_nopending.is_err(), "must fail when no pending change");
+}
+
+#[test]
 fn policy_cancel_and_clear_queue() {
     testing_env!(owner_ctx());
     let mut c = contract();
@@ -477,7 +526,7 @@ fn length_tiered_pricing_and_payment_flow() {
     assert!(c.get_pricing_config().accepted_tokens.contains(&usdt));
 
     testing_env!(VMContextBuilder::new()
-        .predecessor_account_id(usdt)
+        .predecessor_account_id(usdt.clone())
         .current_account_id(accounts(1))
         .build());
     let refund = match c.ft_on_transfer(
@@ -490,4 +539,113 @@ fn length_tiered_pricing_and_payment_flow() {
     };
     assert_eq!(refund, 0);
     assert_eq!(c.owner_of("six.uni".into()), Some(user6));
+
+    // 11. Cross-chain keyless callback abstraction:
+    // A cross-chain solver (solver.testnet) transfers USDC on behalf of a foreign-chain user (alice.testnet)
+    // specifying target owner in msg: `{"name": "callback.uni", "owner": "alice.testnet"}`.
+    let solver: AccountId = "solver.testnet".parse().unwrap();
+    let alice: AccountId = "alice.testnet".parse().unwrap();
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(usdc)
+        .current_account_id(accounts(1))
+        .build());
+    let callback_msg = format!("{{\"name\": \"callback.uni\", \"owner\": \"{alice}\"}}");
+    let refund = match c.ft_on_transfer(
+        solver.clone(),
+        near_sdk::json_types::U128(10_000_000), // Pays $10 for 8-char name (costs $5)
+        callback_msg,
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    // Excess $5 refunded to solver
+    assert_eq!(refund, 5_000_000);
+    // Domain owned by alice.testnet, NOT solver.testnet!
+    assert_eq!(c.owner_of("callback.uni".into()), Some(alice.clone()));
+    let rec = c.get_record("callback.uni".into()).expect("record exists");
+    assert_eq!(rec.owner, alice);
+}
+
+#[test]
+fn ft_on_transfer_typed_enum_deserialization() {
+    testing_env!(owner_ctx());
+    let mut c = contract();
+
+    let usdc = accounts(4);
+    c.set_pricing_config(Some(usdc.clone()), None, None, None, None);
+
+    let solver: AccountId = "solver.testnet".parse().unwrap();
+    let alice: AccountId = "alice.testnet".parse().unwrap();
+    let bob: AccountId = "bob.testnet".parse().unwrap();
+    let charlie: AccountId = "charlie.testnet".parse().unwrap();
+
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(usdc.clone())
+        .current_account_id(accounts(1))
+        .build());
+
+    // 1. Tagged action: Claim enum variant holding ClaimArgs struct
+    // {"claim": {"name": "typedclaim.uni", "owner": "alice.testnet"}}
+    let msg_claim =
+        format!("{{\"claim\": {{\"name\": \"typedclaim.uni\", \"owner\": \"{alice}\"}}}}");
+    let refund = match c.ft_on_transfer(
+        solver.clone(),
+        near_sdk::json_types::U128(5_000_000),
+        msg_claim,
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("typedclaim.uni".into()), Some(alice.clone()));
+
+    // 2. Tagged action: Register enum variant holding ClaimArgs struct
+    // {"register": {"name": "typedreg.uni", "owner": "bob.testnet"}}
+    let msg_reg = format!("{{\"register\": {{\"name\": \"typedreg.uni\", \"owner\": \"{bob}\"}}}}");
+    let refund = match c.ft_on_transfer(
+        solver.clone(),
+        near_sdk::json_types::U128(5_000_000),
+        msg_reg,
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("typedreg.uni".into()), Some(bob.clone()));
+
+    // 3. Direct untagged ClaimArgs struct: {"name": "directstruct.uni", "owner": "charlie.testnet"}
+    let msg_direct = format!("{{\"name\": \"directstruct.uni\", \"owner\": \"{charlie}\"}}");
+    let refund = match c.ft_on_transfer(
+        solver.clone(),
+        near_sdk::json_types::U128(5_000_000),
+        msg_direct,
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("directstruct.uni".into()), Some(charlie.clone()));
+
+    // 4. Direct untagged ClaimArgs struct without owner: defaults to sender_id
+    let msg_no_owner = "{\"name\": \"directself.uni\"}".to_string();
+    let refund = match c.ft_on_transfer(
+        charlie.clone(),
+        near_sdk::json_types::U128(5_000_000),
+        msg_no_owner,
+    ) {
+        near_sdk::PromiseOrValue::Value(v) => v.0,
+        _ => panic!("expected value"),
+    };
+    assert_eq!(refund, 0);
+    assert_eq!(c.owner_of("directself.uni".into()), Some(charlie.clone()));
+
+    // 5. Malformed JSON payload panics with INVALID_MSG to prevent losing funds on invalid actions
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.ft_on_transfer(
+            solver.clone(),
+            near_sdk::json_types::U128(5_000_000),
+            "{\"completely_invalid_key\": 123}".to_string(),
+        );
+    }));
+    assert!(err.is_err(), "malformed JSON payload must panic");
 }

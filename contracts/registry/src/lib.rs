@@ -126,6 +126,51 @@ pub struct PricingConfig {
     pub price_5_plus_char: U128,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaimArgs {
+    pub name: String,
+    pub owner: Option<AccountId>,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FtTransferAction {
+    Claim(ClaimArgs),
+    Register(ClaimArgs),
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum FtOnTransferMsg {
+    Action(FtTransferAction),
+    Direct(ClaimArgs),
+    Plain(String),
+}
+
+impl FtOnTransferMsg {
+    pub fn parse(msg_str: &str, sender_id: &AccountId) -> (String, AccountId) {
+        let (name, owner_opt) = match near_sdk::serde_json::from_str::<FtOnTransferMsg>(msg_str) {
+            Ok(FtOnTransferMsg::Action(FtTransferAction::Claim(args)))
+            | Ok(FtOnTransferMsg::Action(FtTransferAction::Register(args)))
+            | Ok(FtOnTransferMsg::Direct(args)) => (args.name, args.owner),
+            Ok(FtOnTransferMsg::Plain(s)) => (s, None),
+            Err(err) => {
+                let trimmed = msg_str.trim();
+                if trimmed.starts_with('{') {
+                    panic_code("INVALID_MSG", &err.to_string());
+                } else {
+                    (trimmed.to_string(), None)
+                }
+            }
+        };
+        let target_owner = owner_opt.unwrap_or_else(|| sender_id.clone());
+        (name, target_owner)
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum EventData {
@@ -592,15 +637,7 @@ impl Contract {
         if !self.is_token_accepted(&token) {
             panic_code("UNSUPPORTED_TOKEN", token.as_ref());
         }
-        let name =
-            if let Ok(val) = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(&msg) {
-                val.get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or(&msg)
-                    .to_string()
-            } else {
-                msg.trim().to_string()
-            };
+        let (name, target_owner) = FtOnTransferMsg::parse(&msg, &sender_id);
 
         let price = self.price_for_name(name.clone()).0;
         if amount.0 < price {
@@ -608,7 +645,7 @@ impl Contract {
             return PromiseOrValue::Value(amount);
         }
 
-        let full = self.internal_claim(&name, &sender_id);
+        let full = self.internal_claim(&name, &target_owner);
         emit(
             "PaymentProcessed",
             &EventData::PaymentProcessed {
@@ -723,6 +760,32 @@ impl Contract {
 
     pub fn cancel_pending_policy(&mut self, name: String) {
         self.cancel_pending_change(name);
+    }
+
+    pub fn admin_approve_pending_policy(&mut self, name: String) {
+        require!(env::predecessor_account_id() == self.admin, "NOT_ADMIN");
+        let full = canonical_name(&name);
+        let record = self
+            .records
+            .get_mut(&full)
+            .unwrap_or_else(|| panic_code("NAME_NOT_FOUND", ""));
+        let pending = record
+            .pending
+            .take()
+            .unwrap_or_else(|| panic_code("NO_PENDING_CHANGE", ""));
+        record.policy = match pending.kind {
+            PendingChangeKind::Set(p) => Some(p),
+            PendingChangeKind::Clear => None,
+        };
+        emit("PolicyChanged", &EventData::PolicyChanged { name: full });
+    }
+
+    pub fn admin_approve_pending_change(&mut self, name: String) {
+        self.admin_approve_pending_policy(name);
+    }
+
+    pub fn approve_pending_policy(&mut self, name: String) {
+        self.admin_approve_pending_policy(name);
     }
 
     pub fn apply_pending_change(&mut self, name: String) {

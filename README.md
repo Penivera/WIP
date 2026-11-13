@@ -7,8 +7,15 @@ Concept and technical specification for NEAR HACKATHON 2026 · Nov 7, 2026 · @P
 ## Deployment & Quick Links
 
 - **Live Testnet Contract:** [`unam-registry.testnet`](https://explorer.testnet.near.org/accounts/unam-registry.testnet)
+  - **Relayer:** `unam-registry.testnet`
+  - **Admin:** `unam-registry.testnet`
+  - **Pricing Tiers:** 3 chars = $50, 4 chars = $20, 5+ chars = $5 (in 6-decimal micro-units)
+  - **Payment Token:** Testnet USDC (`17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760`)
+  - **Live Domain:** `peni.uni` &rarr; Owned by `peni.testnet` (Generation 3, with verified EVM address)
+- **Keyless Cross-Chain Callback Abstraction:** Solvers execute `ft_transfer_call` with `{"name": "...", "owner": "..."}`. The contract autonomous callback claims the domain directly to the target buyer with zero relayer private keys to manage.
 - **Multichain Stablecoin & Intent Settlement Guide:** [DOCS_SUPPORTED_STABLES.md](file:///home/peni/Projects/wip/DOCS_SUPPORTED_STABLES.md)
 - **Backend Resolver & Router Service:** [resolver-py/README.md](file:///home/peni/Projects/wip/resolver-py/README.md)
+- **License:** [GPLv2 (GNU General Public License v2.0)](file:///home/peni/Projects/wip/LICENSE)
 
 ## Standards alignment
 
@@ -333,3 +340,7 @@ Added after the reusable-address check: [Aurora Persistent Addresses](https://do
 Added after the API check: [Create persistent deposit address (API reference)](https://docs.intents.aurora.dev/api-reference/persistent-addresses-api-reference/create-persistent-deposit-address.md), [Persistent deposit status](https://docs.intents.aurora.dev/api-reference/persistent-addresses-api-reference/get-persistent-deposit-status.md), [API Keys and Fees](https://docs.intents.aurora.dev/getting-started/api-keys-and-fees.md).
 
 Added for the Chain Signatures fallback: [Chain Signatures overview](https://docs.near.org/chain-abstraction/chain-signatures), [Implementing Chain Signatures](https://docs.near.org/chain-abstraction/chain-signatures/implementation), [Getting started](https://docs.near.org/chain-abstraction/chain-signatures/getting-started).
+
+## License
+
+This project is free software licensed under the **GNU General Public License Version 2** (`GPL-2.0-only`). See [LICENSE](file:///home/peni/Projects/wip/LICENSE) for the full license terms.

@@ -305,3 +305,44 @@ def test_checkout_simulation_reject():
     )
     assert resp_sim.status_code == 200
     assert resp_sim.json()["status"] == "FAILED"
+
+
+def test_admin_approve_policy_endpoint():
+    name = "queued-policy.uni"
+    MOCK_CONTRACT_RECORDS[name] = {
+        "owner": "alice.testnet",
+        "generation": 1,
+        "chains": {},
+        "policy": None,
+        "pending": {
+            "effective_at_ms": 1794500000000,
+            "policy": {
+                "force_default": True,
+                "default": {
+                    "Asset": {
+                        "chain": "eip155:1",
+                        "asset": "eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                        "address": [17] * 20,
+                    }
+                },
+                "payout": None,
+            },
+        },
+    }
+
+    # 1. Admin approves the pending policy change
+    resp = client.post("/v1/admin/approve-policy", json={"name": name})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "APPROVED"
+    assert resp.json()["name"] == name
+
+    # 2. Record now has policy applied and pending cleared
+    rec = MOCK_CONTRACT_RECORDS[name]
+    assert rec["policy"] is not None
+    assert rec["policy"]["force_default"] is True
+    assert rec.get("pending") is None
+
+    # 3. Second call fails with NO_PENDING_CHANGE
+    resp_again = client.post("/v1/admin/approve-policy", json={"name": name})
+    assert resp_again.status_code == 400
+    assert "NO_PENDING_CHANGE" in resp_again.json()["detail"]["error"]

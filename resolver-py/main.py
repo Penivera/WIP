@@ -496,5 +496,22 @@ async def simulate_checkout_payment(req: SimulateCheckoutRequest):
         raise HTTPException(status_code=400, detail={"error": str(err)})
 
 
+class ApprovePolicyRequest(BaseModel):
+    name: str
+
+
+@app.post("/v1/admin/approve-policy")
+async def admin_approve_policy(req: ApprovePolicyRequest):
+    """
+    Admin path to approve and immediately apply a queued destination / policy change,
+    bypassing the standard time delay.
+    """
+    try:
+        clean_name = validate_and_normalize_name(req.name)
+        return await near_client.admin_approve_pending_policy(clean_name)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail={"error": str(err)})
+
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -3,6 +3,7 @@ name = "resolver-py"
 version = "0.1.0"
 description = "Universal Name backend resolver and intent router"
 readme = "README.md"
+license = "GPL-2.0-only"
 authors = [
     { name = "Sanaur Asif", email = "sanaurasif2@gmail.com" }
 ]
