@@ -23,7 +23,6 @@ import {
 import { settings } from "./config";
 import { registry } from "./registry";
 
-const BASE = settings.apiUrl;
 
 /** The only provider label that means "this deposit address came from a live 1Click quote". */
 const LIVE_PROVIDER = "near-intents-1click";
@@ -31,12 +30,23 @@ const LIVE_PROVIDER = "near-intents-1click";
 async function request(path: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   let res: Response;
   try {
-    res = await fetch(BASE + path, init);
+    res = await fetch(settings.apiUrl + path, init);
   } catch {
-    throw new Error(`Cannot reach the resolver at ${BASE}. Is services/resolver-py running?`);
+    throw new Error(`Cannot reach the resolver at ${settings.apiUrl}. Is resolver-py running?`);
   }
   return { status: res.status, body: await res.json().catch(() => null) };
 }
+
+/**
+ * How long the sender has to pay a routed quote.
+ *
+ * The resolver asks 1Click for a 30-minute deadline: after it, a deposit is
+ * refunded instead of converted. 1Click's reply does not repeat that time. Its
+ * `deadline` field is when the address stops working altogether, about three
+ * days later, which is not a safe "send before" time. So the window is counted
+ * from now and kept inside the 30 minutes, leaving room for the deposit to confirm.
+ */
+const SEND_WINDOW_MS = 20 * 60_000;
 
 const fail = (error: ResolveErrorCode, message: string, supported?: SupportedAsset[]): ResolveErr => ({
   ok: false,
@@ -230,7 +240,7 @@ export const api = {
       destination,
       amountIn: q.amount,
       estReceive: { amount: String(r.estReceiveFormatted), token: destination.token },
-      expiresAt: String(r.expiresAt),
+      expiresAt: new Date(Math.min(Date.parse(String(r.expiresAt)), Date.now() + SEND_WINDOW_MS)).toISOString(),
       timeEstimateSec: Number(r.timeEstimateSeconds) || undefined,
       paymentId: String(r.depositAddress),
       warnings: shown,

@@ -1,0 +1,114 @@
+/* Styles live inside the widget's shadow root, so nothing leaks into or out of the host page. */
+:host {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #14181f;
+  --muted: #5d6675;
+  --line: #dfe3ea;
+  --accent: #1f6feb;
+  --accent-ink: #ffffff;
+  --ok: #17794a;
+  --ok-bg: #e6f5ec;
+  --warn: #8a5a00;
+  --warn-bg: #fff4d6;
+  --bad: #b3261e;
+  --bad-bg: #fdeceb;
+  --shadow: 0 12px 40px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.12);
+  all: initial;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.4;
+}
+@media (prefers-color-scheme: dark) {
+  :host {
+    --bg: #0f1217;
+    --card: #181c23;
+    --ink: #e8ebf0;
+    --muted: #9aa4b2;
+    --line: #2a303a;
+    --accent: #5b9bff;
+    --accent-ink: #0b1220;
+    --ok: #6fd3a0;
+    --ok-bg: #12301f;
+    --warn: #f0c060;
+    --warn-bg: #33280c;
+    --bad: #ff8a80;
+    --bad-bg: #3a1614;
+    --shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+* { box-sizing: border-box; }
+
+/* Overlay: popup card pinned top-centre over the host page. */
+.scrim { position: fixed; inset: 0; z-index: 2147483000; background: rgba(15, 23, 42, 0.35); }
+.scrim.clear { background: transparent; pointer-events: none; }
+.popup {
+  position: fixed; z-index: 2147483001; top: 16px; left: 50%; transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+  display: flex; flex-direction: column;
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.bar { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 6px; border-bottom: 1px solid var(--line); }
+.bar .title { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 20px; line-height: 1; cursor: pointer; }
+.icon:hover:not(:disabled) { background: var(--bg); }
+.icon:disabled { color: var(--line); cursor: default; }
+.icon:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.switch { border: 0; background: transparent; color: var(--accent); font-size: 13px; font-weight: 600; padding: 6px 8px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.switch:hover { background: var(--bg); }
+.body { padding: 14px 16px 16px; overflow-y: auto; }
+.foot { padding: 8px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+
+h2 { font-size: 16px; margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+p.lead { color: var(--muted); }
+label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+input, select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font: inherit; font-size: 16px; }
+input[type="checkbox"] { width: auto; margin-right: 8px; }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; min-width: 0; }
+button.btn { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer; }
+button.btn.secondary { background: transparent; color: var(--accent); }
+button.btn.small { padding: 6px 10px; font-size: 13px; }
+button.btn.block { display: block; width: 100%; }
+button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.note { border-radius: 8px; padding: 9px 11px; font-size: 14px; margin: 12px 0 0; }
+.note.ok { background: var(--ok-bg); color: var(--ok); }
+.note.warn { background: var(--warn-bg); color: var(--warn); }
+.note.bad { background: var(--bad-bg); color: var(--bad); }
+.kv { display: grid; grid-template-columns: 118px 1fr; gap: 6px 10px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.address { display: flex; gap: 8px; align-items: center; padding: 9px 11px; border: 1px dashed var(--line); border-radius: 8px; margin-top: 12px; }
+.address .mono { flex: 1; }
+.qr { display: block; margin: 12px auto 0; border-radius: 8px; background: #fff; padding: 6px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--line); color: var(--ink); }
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.bad { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+ul.plain { list-style: none; padding: 0; margin: 0; }
+ul.plain li { padding: 10px 0; border-top: 1px solid var(--line); }
+ul.plain li:first-child { border-top: 0; }
+ul.hints { color: var(--muted); font-size: 13.5px; padding-left: 18px; margin: 12px 0 0; }
+.muted { color: var(--muted); font-size: 14px; }
+a { color: var(--accent); }
+/* Menu rows that lead to another card. */
+.menu { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.menu button { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); font: inherit; cursor: pointer; }
+.menu button:hover { border-color: var(--accent); }
+.menu small { display: block; color: var(--muted); font-size: 13px; }
+.menu .chev { color: var(--muted); font-size: 18px; }
+@media (max-width: 420px) {
+  .row { flex-direction: column; gap: 0; }
+  .kv { grid-template-columns: 1fr; gap: 0; }
+  .kv dd { margin-bottom: 8px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .popup { animation: drop 0.16s ease-out; }
+  @keyframes drop { from { opacity: 0; transform: translate(-50%, -8px); } }
+}

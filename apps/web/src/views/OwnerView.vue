@@ -11,12 +11,12 @@ import {
   type TokenInfo,
 } from "@unam/shared";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { RouterLink } from "vue-router";
 import PaymentCard from "../components/PaymentCard.vue";
 import { api } from "../lib/api";
 import { connectEvm, hasEvmWallet, signEvmMessage } from "../lib/evm";
 import { settings } from "../lib/config";
 import { changeDelayMs, connectNear, disconnectNear, explainError, initNear, nearAccount, registryWrite } from "../lib/near";
+import { nav } from "../lib/nav";
 import { registry } from "../lib/registry";
 
 const tokens = ref<TokenInfo[]>([]);
@@ -55,7 +55,19 @@ const symbolOf = (assetId: string) => tokens.value.find((t) => t.assetId === ass
 const now = ref(Date.now());
 const pendingReady = computed(() => (record.value?.pending ? now.value >= record.value.pending.effective_at_ms : false));
 
+const screen = nav.current;
 let timer: number | undefined;
+
+function manage(n: string) {
+  selected.value = n;
+  nav.go("name");
+}
+
+/** Clears the last success or error message when moving to another card. */
+watch(screen, () => {
+  notice.value = "";
+  error.value = "";
+});
 
 watch(destChain, () => {
   if (!destTokens.value.some((t) => t.token === destToken.value)) {
@@ -144,7 +156,7 @@ const claim = () =>
       await registryWrite.claim(n.name);
       newName.value = "";
       await loadNames();
-      selected.value = n.name;
+      manage(n.name);
     },
     "Name claimed.",
   );
@@ -213,161 +225,192 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <h1>My names</h1>
-  <p class="lead">Claim a name and choose what you receive, whatever people send.</p>
+  <p v-if="loadError" class="note bad" style="margin: 0 0 12px">{{ loadError }}</p>
 
-  <p v-if="loadError" class="note bad">{{ loadError }}</p>
-  <p v-if="changeDelayMs" class="note warn">
-    This contract delays destination changes by {{ Math.round(changeDelayMs / 60000) }} minutes. A saved change shows as
-    waiting, then needs applying.
-  </p>
+  <!-- Card: wallet, owned names, claim -->
+  <div v-if="screen === 'names'">
+    <p class="lead">Claim a name and choose what you receive, whatever people send.</p>
 
-  <section class="card">
-    <h2>NEAR wallet</h2>
     <template v-if="nearAccount">
-      <p>Connected as <span class="mono">{{ nearAccount }}</span> on {{ settings.network }}</p>
-      <button type="button" class="secondary small" @click="disconnectNear">Disconnect</button>
+      <p>
+        <span class="mono">{{ nearAccount }}</span>
+        <span class="muted"> · {{ settings.network }} · </span>
+        <a href="#" @click.prevent="disconnectNear">Disconnect</a>
+      </p>
+
+      <h2 style="margin-top: 14px">Your names</h2>
+      <p v-if="!names.length" class="muted">This account owns no names yet.</p>
+      <div v-else class="menu" style="margin-top: 0">
+        <button v-for="n in names" :key="n" type="button" @click="manage(n)">
+          <span>{{ n }}</span><span class="chev">›</span>
+        </button>
+      </div>
+
+      <form style="margin-top: 16px" @submit.prevent="claim">
+        <h2>Claim a name</h2>
+        <label for="un-new">3 to 32 characters: a-z, 0-9 and hyphens</label>
+        <input id="un-new" v-model.trim="newName" placeholder="peni" autocomplete="off" autocapitalize="none" />
+        <p v-if="nameCheck && !nameCheck.ok" class="muted" style="margin-top: 6px">Not valid: {{ nameCheck.reason }}.</p>
+        <div class="actions">
+          <button type="submit" class="btn block" :disabled="!nameCheck?.ok || busy === 'claim'">
+            {{ busy === "claim" ? "Confirm in your wallet…" : "Claim" }}
+          </button>
+        </div>
+      </form>
     </template>
-    <button v-else type="button" @click="run('connect', connectNear)">Connect NEAR wallet</button>
-  </section>
+    <div v-else class="actions">
+      <button type="button" class="btn block" @click="run('connect', connectNear)">Connect NEAR wallet</button>
+    </div>
+  </div>
+
+  <!-- Card: one name -->
+  <div v-else-if="screen === 'name'">
+    <template v-if="selected && record">
+      <h2>{{ selected }}</h2>
+      <dl class="kv">
+        <dt>You receive</dt>
+        <dd v-if="record.policy">
+          {{ record.policy.payout.token }} on {{ chainName(record.policy.payout.chain) }}
+          <span v-if="record.policy.payout.type === 'bank'"> → bank (simulated)</span>
+        </dd>
+        <dd v-else class="muted">Not set</dd>
+        <dt>Direct wallets</dt>
+        <dd>{{ Object.keys(record.records).length || "None" }}</dd>
+      </dl>
+      <p v-if="record.pending" class="note warn">A destination change is waiting to be applied.</p>
+      <div class="menu">
+        <button type="button" @click="nav.go('destination')">
+          <span>What you receive<small>Token, chain and address for routed payments</small></span><span class="chev">›</span>
+        </button>
+        <button type="button" @click="nav.go('wallets')">
+          <span>Direct wallets<small>Get paid as-is on chains where you have a wallet</small></span><span class="chev">›</span>
+        </button>
+        <button type="button" @click="nav.go('payments')">
+          <span>Incoming payments<small>{{ payments.length }} tracked</small></span><span class="chev">›</span>
+        </button>
+      </div>
+    </template>
+    <p v-else-if="selected" class="note warn" style="margin-top: 0">The contract returned no record for “{{ selected }}”.</p>
+    <p v-else class="muted">Pick a name first.</p>
+  </div>
+
+  <!-- Card: routed destination -->
+  <div v-else-if="screen === 'destination'">
+    <template v-if="selected && record">
+      <dl v-if="record.policy" class="kv">
+        <dt>Current</dt>
+        <dd>
+          {{ record.policy.payout.token }} on {{ chainName(record.policy.payout.chain) }}
+          <span v-if="record.policy.payout.type === 'bank'">, then simulated bank payout via {{ record.policy.payout.provider }}</span>
+        </dd>
+        <dt>Address</dt>
+        <dd class="mono">{{ record.policy.payout.address }}</dd>
+        <dt>Route all</dt>
+        <dd>{{ record.policy.force_default ? "Yes" : "No, direct wallets are paid as-is" }}</dd>
+      </dl>
+      <p v-else class="muted">No destination yet. Without one, only chains with a direct wallet can pay {{ selected }}.</p>
+
+      <div v-if="record.pending" class="note warn">
+        Waiting:
+        {{ record.pending.policy ? `${record.pending.policy.payout.token} on ${chainName(record.pending.policy.payout.chain)}` : "clear the destination" }}.
+        <template v-if="pendingReady">
+          It can be applied now.
+          <button type="button" class="btn small" style="margin-left: 6px" :disabled="busy === 'apply'" @click="applyPending">Apply</button>
+        </template>
+        <template v-else>Ready at {{ new Date(record.pending.effective_at_ms).toLocaleString() }}.</template>
+      </div>
+      <p v-else-if="changeDelayMs" class="muted" style="margin-top: 10px">
+        Changes take effect {{ Math.round(changeDelayMs / 60000) }} minutes after saving, then need applying.
+      </p>
+
+      <form @submit.prevent="saveDestination">
+        <div class="row">
+          <div>
+            <label for="un-dchain">Receive on</label>
+            <select id="un-dchain" v-model="destChain">
+              <option v-for="c in CHAINS" :key="c.key" :value="c.key">{{ c.name }}</option>
+            </select>
+          </div>
+          <div>
+            <label for="un-dtoken">Token</label>
+            <select id="un-dtoken" v-model="destToken">
+              <option v-for="t in destTokens" :key="t.assetId" :value="t.token">{{ t.token }}</option>
+            </select>
+          </div>
+        </div>
+
+        <label for="un-ptype">Payout</label>
+        <select id="un-ptype" v-model="payoutType">
+          <option value="crypto">To my wallet</option>
+          <option value="bank">To my bank (simulated)</option>
+        </select>
+
+        <label for="un-daddr">
+          {{ payoutType === "bank" ? "Provider's deposit address (stands in for a real off-ramp)" : "Your address" }}
+          on {{ chainName(destChain) }}
+        </label>
+        <input id="un-daddr" v-model.trim="destAddress" class="mono" autocomplete="off" />
+        <p v-if="destAddress && !destAddressOk" class="muted" style="margin-top: 6px">Not a valid {{ chainName(destChain) }} address.</p>
+
+        <div v-if="payoutType === 'bank'" class="row">
+          <div>
+            <label for="un-prov">Provider ID</label>
+            <input id="un-prov" v-model.trim="bankProvider" autocomplete="off" />
+          </div>
+          <div>
+            <label for="un-pref">Reference (no bank details)</label>
+            <input id="un-pref" v-model.trim="bankReference" placeholder="ref-001" autocomplete="off" />
+          </div>
+        </div>
+
+        <label><input v-model="forceDefault" type="checkbox" />Route every payment here, even where I have a direct wallet</label>
+
+        <div class="actions">
+          <button type="submit" class="btn block" :disabled="!destAddressOk || !destTokenInfo || busy === 'policy'">
+            {{ busy === "policy" ? "Confirm in your wallet…" : "Save destination" }}
+          </button>
+        </div>
+      </form>
+    </template>
+    <p v-else class="muted">Pick a name first.</p>
+  </div>
+
+  <!-- Card: direct wallets -->
+  <div v-else-if="screen === 'wallets'">
+    <template v-if="selected && record">
+      <p class="lead">A connected wallet is paid directly on its chain, with no conversion.</p>
+      <ul class="plain">
+        <li v-for="(addr, key) in record.records" :key="key">
+          {{ chainName(String(key)) }}<br /><span class="mono">{{ addr }}</span>
+        </li>
+        <li v-if="!Object.keys(record.records).length" class="muted">None connected.</li>
+      </ul>
+      <label for="un-wchain">Add an EVM wallet on</label>
+      <select id="un-wchain" v-model="walletChain">
+        <option v-for="c in evmChains" :key="c.key" :value="c.key">{{ c.name }}</option>
+      </select>
+      <div class="actions">
+        <button type="button" class="btn block" :disabled="!hasEvmWallet() || busy === 'wallet'" @click="addWallet">
+          {{ busy === "wallet" ? "Sign, then confirm…" : "Connect and sign" }}
+        </button>
+      </div>
+      <p v-if="!hasEvmWallet()" class="muted" style="margin-top: 8px">No EVM wallet found in this browser.</p>
+    </template>
+    <p v-else class="muted">Pick a name first.</p>
+  </div>
+
+  <!-- Card: incoming payments -->
+  <div v-else-if="screen === 'payments'">
+    <p v-if="!selected" class="muted">Pick a name first.</p>
+    <p v-else-if="!payments.length" class="muted">
+      No routed payments tracked for {{ selected }}. Direct payments go straight to your wallet and are not listed, and
+      the resolver forgets this list when it restarts.
+    </p>
+    <ul v-else class="plain">
+      <li v-for="p in payments" :key="p.id"><PaymentCard :payment="p" compact /></li>
+    </ul>
+  </div>
 
   <p v-if="error" class="note bad">{{ error }}</p>
   <p v-if="notice" class="note ok">{{ notice }}</p>
-
-  <template v-if="nearAccount">
-    <form class="card" @submit.prevent="claim">
-      <h2>Claim a name</h2>
-      <label for="new">Name (3 to 32 characters: a-z, 0-9 and hyphens)</label>
-      <input id="new" v-model.trim="newName" placeholder="peni" autocomplete="off" autocapitalize="none" />
-      <p v-if="nameCheck && !nameCheck.ok" class="muted">Not valid: {{ nameCheck.reason }}.</p>
-      <div class="actions">
-        <button type="submit" :disabled="!nameCheck?.ok || busy === 'claim'">
-          {{ busy === "claim" ? "Confirm in your wallet…" : "Claim" }}
-        </button>
-      </div>
-    </form>
-
-    <section class="card">
-      <h2>Your names</h2>
-      <p v-if="!names.length" class="muted">This account owns no names yet.</p>
-      <template v-else>
-        <label for="pick">Manage</label>
-        <select id="pick" v-model="selected">
-          <option v-for="n in names" :key="n" :value="n">{{ n }}</option>
-        </select>
-        <p class="muted">
-          Pay link: <RouterLink :to="`/pay/${selected}`">/pay/{{ selected }}</RouterLink>
-        </p>
-      </template>
-    </section>
-
-    <template v-if="selected && record">
-      <section class="card">
-        <h2>What you receive</h2>
-        <dl v-if="record.policy" class="kv">
-          <dt>Current</dt>
-          <dd>
-            {{ record.policy.payout.token }} on {{ chainName(record.policy.payout.chain) }}
-            <span v-if="record.policy.payout.type === 'bank'">, then simulated bank payout via {{ record.policy.payout.provider }}</span>
-          </dd>
-          <dt>Address</dt>
-          <dd class="mono">{{ record.policy.payout.address }}</dd>
-          <dt>Route everything</dt>
-          <dd>{{ record.policy.force_default ? "Yes" : "No, connected wallets are paid directly" }}</dd>
-        </dl>
-        <p v-else class="muted">No routed destination yet. Without one, only chains with a connected wallet can pay you.</p>
-
-        <div v-if="record.pending" class="note warn">
-          A change is waiting:
-          {{ record.pending.policy ? `${record.pending.policy.payout.token} on ${chainName(record.pending.policy.payout.chain)}` : "clear the destination" }}.
-          <template v-if="pendingReady">
-            It can be applied now.
-            <button type="button" class="small" style="margin-left: 8px" :disabled="busy === 'apply'" @click="applyPending">Apply</button>
-          </template>
-          <template v-else>Ready at {{ new Date(record.pending.effective_at_ms).toLocaleString() }}.</template>
-        </div>
-
-        <form @submit.prevent="saveDestination">
-          <div class="row">
-            <div>
-              <label for="dchain">Receive on</label>
-              <select id="dchain" v-model="destChain">
-                <option v-for="c in CHAINS" :key="c.key" :value="c.key">{{ c.name }}</option>
-              </select>
-            </div>
-            <div>
-              <label for="dtoken">Token</label>
-              <select id="dtoken" v-model="destToken">
-                <option v-for="t in destTokens" :key="t.assetId" :value="t.token">{{ t.token }}</option>
-              </select>
-            </div>
-          </div>
-
-          <label for="ptype">Payout</label>
-          <select id="ptype" v-model="payoutType">
-            <option value="crypto">To my wallet</option>
-            <option value="bank">To my bank (simulated)</option>
-          </select>
-
-          <label for="daddr">
-            {{ payoutType === "bank" ? "Provider's deposit address (stands in for a real off-ramp)" : "Your address" }}
-            on {{ chainName(destChain) }}
-          </label>
-          <input id="daddr" v-model.trim="destAddress" class="mono" autocomplete="off" />
-          <p v-if="destAddress && !destAddressOk" class="muted">Not a valid {{ chainName(destChain) }} address.</p>
-
-          <div v-if="payoutType === 'bank'" class="row">
-            <div>
-              <label for="prov">Provider ID</label>
-              <input id="prov" v-model.trim="bankProvider" autocomplete="off" />
-            </div>
-            <div>
-              <label for="pref">Provider reference (no bank details)</label>
-              <input id="pref" v-model.trim="bankReference" placeholder="ref-001" autocomplete="off" />
-            </div>
-          </div>
-
-          <label><input v-model="forceDefault" type="checkbox" />Route every payment here, even on chains where I have a wallet</label>
-
-          <div class="actions">
-            <button type="submit" :disabled="!destAddressOk || !destTokenInfo || busy === 'policy'">
-              {{ busy === "policy" ? "Confirm in your wallet…" : "Save destination" }}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section class="card">
-        <h2>Direct wallets</h2>
-        <p class="muted">A connected wallet is paid directly on its chain, with no conversion.</p>
-        <ul class="plain">
-          <li v-for="(addr, key) in record.records" :key="key">
-            {{ chainName(String(key)) }}: <span class="mono">{{ addr }}</span>
-          </li>
-          <li v-if="!Object.keys(record.records).length" class="muted">None connected.</li>
-        </ul>
-        <label for="wchain">Add an EVM wallet on</label>
-        <div class="row">
-          <select id="wchain" v-model="walletChain">
-            <option v-for="c in evmChains" :key="c.key" :value="c.key">{{ c.name }}</option>
-          </select>
-          <button type="button" class="secondary" style="flex: 0 0 auto" :disabled="!hasEvmWallet() || busy === 'wallet'" @click="addWallet">
-            {{ busy === "wallet" ? "Sign, then confirm…" : "Connect and sign" }}
-          </button>
-        </div>
-        <p v-if="!hasEvmWallet()" class="muted">No EVM wallet found in this browser.</p>
-      </section>
-    </template>
-    <p v-else-if="selected && !record" class="note warn">
-      The contract returned no record for “{{ selected }}”.
-    </p>
-
-    <section v-if="selected" class="card">
-      <h2>Incoming payments</h2>
-      <p v-if="!payments.length" class="muted">No routed payments tracked. Direct payments go straight to your wallet and are not listed, and the resolver forgets this list when it restarts.</p>
-      <ul v-else class="plain">
-        <li v-for="p in payments" :key="p.id"><PaymentCard :payment="p" compact /></li>
-      </ul>
-    </section>
-  </template>
 </template>

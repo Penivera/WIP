@@ -6,6 +6,7 @@
     "dev:web": "pnpm --filter @unam/web dev",
     "build:web": "pnpm --filter @unam/web build",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "build:embed": "pnpm --filter @unam/web build:embed"
   }
 }

@@ -3,10 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Universal Name</title>
+    <title>Universal Name — embed demo</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; background: #eef1f5; color: #14181f; }
+      .demo { max-width: 720px; margin: 0 auto; padding: 120px 16px 40px; }
+      .demo p { color: #5d6675; line-height: 1.5; }
+      .demo button { padding: 10px 16px; margin-right: 8px; border-radius: 8px; border: 1px solid #1f6feb; background: #1f6feb; color: #fff; font-size: 15px; cursor: pointer; }
+      .demo button.alt { background: transparent; color: #1f6feb; }
+      .demo code { background: #dfe3ea; padding: 2px 6px; border-radius: 4px; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0b0d11; color: #e8ebf0; }
+        .demo p { color: #9aa4b2; }
+        .demo code { background: #2a303a; }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div class="demo">
+      <h1>Your app here</h1>
+      <p>
+        This page stands in for any site that embeds Universal Name. The widget opens as a popup over the page with
+        <code>UniversalName.open()</code>, without redirecting.
+      </p>
+      <button id="open-pay">Pay a name</button>
+      <button id="open-names" class="alt">Manage my names</button>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

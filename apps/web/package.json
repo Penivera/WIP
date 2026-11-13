@@ -7,14 +7,14 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "build:embed": "vue-tsc --noEmit && vite build --mode embed"
   },
   "dependencies": {
     "@hot-labs/near-connect": "^0.12.0",
     "@unam/shared": "workspace:*",
     "qrcode": "^1.5.4",
-    "vue": "^3.5.0",
-    "vue-router": "^4.5.0"
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.5",
