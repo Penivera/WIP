@@ -89,12 +89,16 @@ class ChainSignaturesManager:
     ) -> dict:
         """
         Enforces Phase 3 security constraints:
-        1. Only authorized watcher/service account can trigger a sweep.
+        1. Only authorized registry or configured watcher account for the active network can trigger a sweep.
         2. Destination must be in the owner's verified records or an approved 1Click swap address.
         3. Per-name USD sweep limit enforced.
         4. Calculates dynamic NEAR deposit (1 yoctoNEAR up to 0.65 NEAR) and records refund accounting.
         """
-        if caller_account != settings.REGISTRY_CONTRACT_ID and caller_account != "watcher.uni.testnet":
+        allowed_callers = {settings.REGISTRY_CONTRACT_ID}
+        if settings.CS_WATCHER_ACCOUNT_ID:
+            allowed_callers.add(settings.CS_WATCHER_ACCOUNT_ID)
+
+        if caller_account not in allowed_callers:
             raise PermissionError("UNAUTHORIZED_SWEEP_CALLER")
 
         if destination_address not in allowed_destinations:
