@@ -1,0 +1,7 @@
+{
+  "name": "unam-resolver-deps",
+  "private": true,
+  "dependencies": {
+    "near-cli-rs": "latest"
+  }
+}
