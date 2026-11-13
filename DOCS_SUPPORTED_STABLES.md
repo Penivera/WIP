@@ -165,8 +165,9 @@ Verified on-chain via `get_pricing_config()`:
 
 ---
 
-## 4. Length-Tiered Pricing Model
+## 4. Length-Tiered Pricing & Slippage Buffer Model
 
+### A. Base Contract Registration Fees
 Universal Name enforces length-tiered pricing in 6-decimal micro-units ($1.00 USD = `1_000_000` micro-units):
 
 | Domain Length | Registration Fee | Micro-Units (6 Decimals) | Description |
@@ -174,6 +175,18 @@ Universal Name enforces length-tiered pricing in 6-decimal micro-units ($1.00 US
 | **3 characters** (e.g. `cat.uni`, `pen.uni`) | **$50.00** | `50_000_000` | Premium short domain |
 | **4 characters** (e.g. `moon.uni`, `peni.uni`) | **$20.00** | `20_000_000` | High-demand 4-letter domain |
 | **5+ characters** (e.g. `alice.uni`, `stellar.uni`) | **$5.00** | `5_000_000` | Standard public domain |
+
+### B. Dynamic Slippage & Cross-Chain Buffer Policy
+Because cross-chain bridges and decentralized exchanges incur minor execution variance and swap slippage, the checkout service bills a small upfront safety buffer on foreign routes to guarantee that the final settlement amount reaching `unam-registry.testnet` satisfies the contract's strict price invariant:
+
+| Route Type | Asset Examples | Upfront Buffer | Rationale |
+| :--- | :--- | :---: | :--- |
+| **Direct NEAR Stables** | USDC, USDT on NEAR | **$0.00** | 1:1 direct settlement; 0% slippage or bridge fees. Exact nominal fee billed. |
+| **Cross-Chain Stables** | USDC, USDT on Base / Ethereum / Solana | **$1.00** | Absorbs cross-chain bridge fees and solver gas execution margins. |
+| **Volatile Intent Assets** | ETH, SOL, AVAX, BNB, POL | **$1.50** | Absorbs DEX swap slippage and real-time market price drift. |
+
+> [!NOTE]
+> **Surplus Refund Guarantee:** Any excess funds that reach `unam-registry.testnet` above the base domain price are **automatically refunded** back to the sender by the contract's NEP-141 callback (`refund = amount - price`). Contract invariants remain strictly guarded, preventing direct underpayment exploits.
 
 ---
 

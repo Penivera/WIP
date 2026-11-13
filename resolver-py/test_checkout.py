@@ -346,3 +346,117 @@ def test_admin_approve_policy_endpoint():
     resp_again = client.post("/v1/admin/approve-policy", json={"name": name})
     assert resp_again.status_code == 400
     assert "NO_PENDING_CHANGE" in resp_again.json()["detail"]["error"]
+
+
+def test_deterministic_checkout_id_and_deposit_address():
+    """
+    Verifies that checkout ID and derived deposit addresses are completely deterministic:
+    1. Multiple calls with same (name, owner, chain, token) yield identical checkout IDs and deposit addresses.
+    2. Derived deposit address matches /v1/cs/derive for the same name and chain.
+    3. Works across EVM (Base) and Solana.
+    """
+    # 1. EVM (Base) deterministic derivation
+    req_evm = {
+        "name": "deterministic-evm.uni",
+        "owner": "buyer.testnet",
+        "chain": "base",
+        "token": "USDC",
+    }
+    resp1 = client.post("/v1/checkout/session", json=req_evm)
+    assert resp1.status_code == 200
+    session1 = resp1.json()
+
+    resp2 = client.post("/v1/checkout/session", json=req_evm)
+    assert resp2.status_code == 200
+    session2 = resp2.json()
+
+    # Checkout ID and deposit address MUST be identical
+    assert session1["checkoutId"] == session2["checkoutId"]
+    assert session1["depositAddress"] == session2["depositAddress"]
+    assert session1["depositAddress"].startswith("0x")
+
+    # Must match /v1/cs/derive endpoint
+    resp_cs = client.get("/v1/cs/derive?name=deterministic-evm.uni&chain=base")
+    assert resp_cs.status_code == 200
+    assert resp_cs.json()["depositAddress"] == session1["depositAddress"]
+
+    # 2. Solana deterministic derivation
+    req_sol = {
+        "name": "deterministic-sol.uni",
+        "owner": "solbuyer.testnet",
+        "chain": "solana",
+        "token": "USDC",
+    }
+    resp_sol1 = client.post("/v1/checkout/session", json=req_sol)
+    assert resp_sol1.status_code == 200
+    session_sol1 = resp_sol1.json()
+
+    resp_sol2 = client.post("/v1/checkout/session", json=req_sol)
+    assert resp_sol2.status_code == 200
+    session_sol2 = resp_sol2.json()
+
+    assert session_sol1["checkoutId"] == session_sol2["checkoutId"]
+    assert session_sol1["depositAddress"] == session_sol2["depositAddress"]
+
+    resp_sol_cs = client.get("/v1/cs/derive?name=deterministic-sol.uni&chain=solana")
+    assert resp_sol_cs.status_code == 200
+    assert resp_sol_cs.json()["depositAddress"] == session_sol1["depositAddress"]
+
+
+def test_checkout_slippage_buffer_policy():
+    """
+    Verifies the dynamic slippage buffer policy:
+    1. Direct NEAR stables: buffer = $0.00 (direct 1:1, exact nominal price).
+    2. Foreign cross-chain stables (Base USDC): buffer = $1.00 (absorbs bridge/solver fees).
+    3. Volatile intent-swap assets (Base ETH): buffer = $1.50 (absorbs DEX swap slippage & drift).
+    """
+    # 1. Direct NEAR USDC: $0 buffer
+    resp_near = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "buffer-near.uni",
+            "owner": "nearuser.testnet",
+            "chain": "near",
+            "token": "USDC",
+        },
+    )
+    assert resp_near.status_code == 200
+    sess_near = resp_near.json()
+    assert sess_near["priceUsd"] == 5.0
+    assert sess_near["slippageBufferUsd"] == 0.0
+    assert sess_near["totalBilledUsd"] == 5.0
+    assert sess_near["amountFormatted"] == "5.00 USDC"
+
+    # 2. Foreign cross-chain USDC on Base: $1.00 buffer
+    resp_base = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "buffer-base.uni",
+            "owner": "baseuser.testnet",
+            "chain": "base",
+            "token": "USDC",
+        },
+    )
+    assert resp_base.status_code == 200
+    sess_base = resp_base.json()
+    assert sess_base["priceUsd"] == 5.0
+    assert sess_base["slippageBufferUsd"] == 1.0
+    assert sess_base["totalBilledUsd"] == 6.0
+    assert sess_base["amountFormatted"] == "6.00 USDC"
+
+    # 3. Volatile ETH on Base: $1.50 buffer
+    resp_eth = client.post(
+        "/v1/checkout/session",
+        json={
+            "name": "buffer-eth.uni",
+            "owner": "ethuser.testnet",
+            "chain": "base",
+            "token": "ETH",
+        },
+    )
+    assert resp_eth.status_code == 200
+    sess_eth = resp_eth.json()
+    assert sess_eth["priceUsd"] == 5.0
+    assert sess_eth["slippageBufferUsd"] == 1.5
+    assert sess_eth["totalBilledUsd"] == 6.5
+    assert "Includes $1.50 slippage buffer" in sess_eth["instructions"]

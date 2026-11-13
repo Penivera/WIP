@@ -19,7 +19,6 @@ import hashlib
 import logging
 import time
 from typing import Any
-import uuid
 
 from config import settings
 from cs_manager import ChainSignaturesManager
@@ -371,19 +370,34 @@ class CheckoutAdapter:
         decimals = asset_meta["decimals"]
         is_stable = asset_meta["isStable"]
 
+        # Slippage & cross-chain execution buffer:
+        # - Native NEAR stables: 0.0 (direct 1:1 settlement, no swap slippage)
+        # - Foreign cross-chain stables: $1.00 (absorbs bridge fees & solver execution variance)
+        # - Volatile intent-swap assets: $1.50 (absorbs DEX swap slippage & market drift)
+        if norm_chain.startswith("near:") and is_stable:
+            buffer_usd = 0.0
+        elif is_stable:
+            buffer_usd = 1.0
+        else:
+            buffer_usd = 1.5
+
+        total_billed_usd = round(usd_price + buffer_usd, 2)
+
         if is_stable:
             settlement_type = "DIRECT_STABLECOIN"
-            amount_base = micro_units if decimals == 6 else int(micro_units * 10 ** (decimals - 6))
-            amount_formatted = f"{usd_price:.2f} {asset_meta['symbol']}"
+            billed_micro = int(round(total_billed_usd * 1_000_000))
+            amount_base = billed_micro if decimals == 6 else int(billed_micro * 10 ** (decimals - 6))
+            amount_formatted = f"{total_billed_usd:.2f} {asset_meta['symbol']}"
         else:
             settlement_type = "INTENT_SWAP_SETTLEMENT"
             token_price = asset_meta.get("priceUsd", 1.0)
-            token_qty = round(usd_price / token_price, 6)
+            token_qty = round(total_billed_usd / token_price, 6)
             amount_base = int(round(token_qty * 10**decimals))
             amount_formatted = f"{token_qty} {asset_meta['symbol']}"
 
-        # Generate checkout session ID
-        checkout_id = f"chk_{uuid.uuid4().hex[:16]}"
+        # Generate deterministic checkout session ID
+        chk_seed = f"{clean_name}:{owner}:{norm_chain}:{asset_meta['symbol']}"
+        checkout_id = f"chk_{hashlib.sha256(chk_seed.encode()).hexdigest()[:16]}"
         now = int(time.time())
         expires_at = now + 3600  # 1 hour expiry
 
@@ -403,19 +417,21 @@ class CheckoutAdapter:
                     f"The Intent Router will swap to USDC on NEAR and register {clean_name} for {owner}."
                 )
         else:
-            # Deterministic Chain Signatures deposit address tied to this checkout
-            derived = self.cs_manager.derive_deposit_address(f"checkout-{checkout_id}", norm_chain)
+            # Deterministically derive the Chain Signatures deposit address bound to (name, chain)
+            derived = self.cs_manager.derive_deposit_address(clean_name, norm_chain)
             deposit_address = derived["depositAddress"]
             if is_stable:
                 instructions = (
-                    f"Send exactly {usd_price:.2f} {asset_meta['symbol']} to "
+                    f"Send exactly {amount_formatted} to "
                     f"{deposit_address} on {FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain)}. "
+                    f"Includes ${buffer_usd:.2f} buffer for cross-chain execution; any surplus is refunded. "
                     f"Domain {clean_name} will be claimed automatically for {owner} upon receipt."
                 )
             else:
                 instructions = (
-                    f"Send {amount_formatted} (~${usd_price:.2f} USD) to "
+                    f"Send {amount_formatted} (~${total_billed_usd:.2f} USD) to "
                     f"{deposit_address} on {FRIENDLY_CHAIN_NAMES.get(norm_chain, norm_chain)}. "
+                    f"Includes ${buffer_usd:.2f} slippage buffer. "
                     f"The Intent Router will swap and settle {usd_price:.2f} USDC on NEAR to claim {clean_name} for {owner}."
                 )
 
@@ -433,6 +449,8 @@ class CheckoutAdapter:
             "settlementAsset": "USDC (NEAR Protocol)",
             "settlementAmountMicro": str(micro_units),
             "priceUsd": usd_price,
+            "slippageBufferUsd": buffer_usd,
+            "totalBilledUsd": total_billed_usd,
             "amount": str(amount_base),
             "amountFormatted": amount_formatted,
             "depositAddress": deposit_address,
