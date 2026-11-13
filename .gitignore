@@ -43,3 +43,13 @@ Thumbs.db
 !.vscode/extensions.json
 session*.md
 PROMPT.md
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+# Embeddable widget build
+dist-embed/

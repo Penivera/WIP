@@ -14,7 +14,6 @@ across all supported blockchains:
 - NEAR Protocol (near:testnet / near:mainnet)
 """
 
-from dataclasses import dataclass
 import hashlib
 import logging
 import time
@@ -395,9 +394,10 @@ class CheckoutAdapter:
             amount_base = int(round(token_qty * 10**decimals))
             amount_formatted = f"{token_qty} {asset_meta['symbol']}"
 
-        # Generate deterministic checkout session ID
-        chk_seed = f"{clean_name}:{owner}:{norm_chain}:{asset_meta['symbol']}"
-        checkout_id = f"chk_{hashlib.sha256(chk_seed.encode()).hexdigest()[:16]}"
+        # Deterministic checkout seed bound to (name, owner, chain, token)
+        clean_owner = owner.strip().lower()
+        chk_preimage = f"{clean_name}:{clean_owner}:{norm_chain}:{asset_meta['symbol']}".encode("utf-8")
+        checkout_id = f"chk_{hashlib.sha256(chk_preimage).hexdigest()[:16]}"
         now = int(time.time())
         expires_at = now + 3600  # 1 hour expiry
 
@@ -417,8 +417,8 @@ class CheckoutAdapter:
                     f"The Intent Router will swap to USDC on NEAR and register {clean_name} for {owner}."
                 )
         else:
-            # Deterministically derive the Chain Signatures deposit address bound to (name, chain)
-            derived = self.cs_manager.derive_deposit_address(clean_name, norm_chain)
+            # Deterministic Chain Signatures deposit address bound to (name, owner, chain)
+            derived = self.cs_manager.derive_deposit_address(f"checkout:{clean_name}:{clean_owner}", norm_chain)
             deposit_address = derived["depositAddress"]
             if is_stable:
                 instructions = (

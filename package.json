@@ -1,0 +1,12 @@
+{
+  "name": "universal-name",
+  "private": true,
+  "packageManager": "pnpm@9.11.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @unam/web dev",
+    "build:web": "pnpm --filter @unam/web build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "build:embed": "pnpm --filter @unam/web build:embed"
+  }
+}
