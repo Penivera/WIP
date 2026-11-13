@@ -153,6 +153,13 @@ async def resolve(
         clean_name = validate_and_normalize_name(name)
         ns, ref, coin_type = canonicalize_chain_key(chain)
         norm_chain = f"{ns}:{ref}"
+        if amount is not None:
+            clean_amt = amount.strip()
+            if not clean_amt.isdigit() or int(clean_amt) <= 0:
+                raise ValueError(
+                    "AMOUNT_INVALID: amount must be a positive integer string in smallest base units"
+                )
+            amount = clean_amt
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
 

@@ -172,6 +172,11 @@ MOCK_CONTRACT_RECORDS: dict[str, dict] = {
 
 
 class NearContractClient:
+    def _redact_cli_output(self, text: str) -> str:
+        if settings.ADMIN_PRIVATE_KEY and settings.ADMIN_PRIVATE_KEY in text:
+            text = text.replace(settings.ADMIN_PRIVATE_KEY, "[REDACTED_PRIVATE_KEY]")
+        return text
+
     async def call_view_method(self, method_name: str, args: dict) -> dict | list | bool | str | None:
         args_b64 = base64.b64encode(json.dumps(args).encode("utf-8")).decode("utf-8")
         payload = {
@@ -297,8 +302,8 @@ class NearContractClient:
                 logger.error(f"Error calling live claim_for: {exc}")
                 raise RuntimeError(f"Error executing live claim_for: {exc}") from exc
 
-            out_text = stdout.decode()
-            err_text = stderr.decode()
+            out_text = self._redact_cli_output(stdout.decode())
+            err_text = self._redact_cli_output(stderr.decode())
             if proc.returncode == 0:
                 tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
                 if not tx_match:
@@ -378,8 +383,8 @@ class NearContractClient:
                 logger.error(f"Error calling live admin_approve: {exc}")
                 raise RuntimeError(f"Error executing live admin_approve: {exc}") from exc
 
-            out_text = stdout.decode()
-            err_text = stderr.decode()
+            out_text = self._redact_cli_output(stdout.decode())
+            err_text = self._redact_cli_output(stderr.decode())
             if proc.returncode == 0:
                 tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
                 if not tx_match:

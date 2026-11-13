@@ -26,7 +26,7 @@ from erc7930 import (
     SOLANA_MAINNET_CAIP2,
     canonicalize_chain_key,
 )
-from near_client import NearContractClient
+from near_client import NearContractClient, NearRpcError
 from proofs import validate_and_normalize_name
 
 logger = logging.getLogger(__name__)
@@ -524,10 +524,24 @@ class CheckoutAdapter:
                 "wait_until": "FINAL",
             },
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(settings.NEAR_RPC_URL, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(settings.NEAR_RPC_URL, json=payload)
+                if getattr(resp, "status_code", 200) == 400:
+                    raise ValueError(
+                        "PAYMENT_UNVERIFIED: Invalid NEAR transaction hash format or RPC request rejected."
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+        except ValueError:
+            raise
+        except httpx.HTTPError as exc:
+            raise NearRpcError(f"NEAR RPC unavailable during payment verification: {exc}") from exc
+
+        if "error" in data:
+            raise ValueError(
+                f"PAYMENT_UNVERIFIED: NEAR transaction not found or invalid: {data['error']}"
+            )
 
         result = data.get("result") or {}
         final_exec = result.get("final_execution_status")
