@@ -380,8 +380,10 @@ class CheckoutAdapter:
             amount_base = int(round(token_qty * 10**decimals))
             amount_formatted = f"{token_qty} {asset_meta['symbol']}"
 
-        # Generate checkout session ID
-        checkout_id = f"chk_{uuid.uuid4().hex[:16]}"
+        # Deterministic checkout seed bound to (name, owner, chain, token)
+        clean_owner = owner.strip().lower()
+        chk_preimage = f"{clean_name}:{clean_owner}:{norm_chain}:{asset_meta['symbol']}".encode("utf-8")
+        checkout_id = f"chk_{hashlib.sha256(chk_preimage).hexdigest()[:16]}"
         now = int(time.time())
         expires_at = now + 3600  # 1 hour expiry
 
@@ -401,8 +403,8 @@ class CheckoutAdapter:
                     f"The Intent Router will swap to USDC on NEAR and register {clean_name} for {owner}."
                 )
         else:
-            # Deterministic Chain Signatures deposit address tied to this checkout
-            derived = self.cs_manager.derive_deposit_address(f"checkout-{checkout_id}", norm_chain)
+            # Deterministic Chain Signatures deposit address bound to (name, owner, chain)
+            derived = self.cs_manager.derive_deposit_address(f"checkout:{clean_name}:{clean_owner}", norm_chain)
             deposit_address = derived["depositAddress"]
             if is_stable:
                 instructions = (
