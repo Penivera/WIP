@@ -33,5 +33,8 @@ class Settings:
     CS_MIN_ATTACHED_DEPOSIT_YOCTO: str = os.getenv("CS_MIN_ATTACHED_DEPOSIT_YOCTO", "1")
     CS_MAX_ATTACHED_DEPOSIT_NEAR: float = float(os.getenv("CS_MAX_ATTACHED_DEPOSIT_NEAR", "0.65"))
 
+    ADMIN_PUBLIC_KEY: str = os.getenv("ADMIN_PUBLIC_KEY", "")
+    ADMIN_PRIVATE_KEY: str = os.getenv("ADMIN_PRIVATE_KEY", "")
+
 
 settings = Settings()

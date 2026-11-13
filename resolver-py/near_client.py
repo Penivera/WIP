@@ -263,7 +263,9 @@ class NearContractClient:
                     settings.REGISTRY_CONTRACT_ID,
                     "network-config",
                     "testnet",
-                    "sign-with-keychain",
+                    "sign-with-plaintext-private-key",
+                    settings.ADMIN_PUBLIC_KEY,
+                    settings.ADMIN_PRIVATE_KEY,
                     "send",
                 ]
                 proc = await asyncio.create_subprocess_exec(
@@ -333,7 +335,9 @@ class NearContractClient:
                     settings.REGISTRY_CONTRACT_ID,
                     "network-config",
                     "testnet",
-                    "sign-with-keychain",
+                    "sign-with-plaintext-private-key",
+                    settings.ADMIN_PUBLIC_KEY,
+                    settings.ADMIN_PRIVATE_KEY,
                     "send",
                 ]
                 proc = await asyncio.create_subprocess_exec(
