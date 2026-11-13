@@ -1,8 +1,6 @@
 """
 Universal Name (.uni) — Multichain Stablecoin Checkout Adapter
-
-Supports purchasing / registering domain names with stablecoins (USDC/USDT)
-across all supported blockchains:
+Supports purchasing / registering domain names with stablecoins (USDC/USDT) across all supported blockchains:
 - Ethereum (eip155:1)
 - Base (eip155:8453)
 - Arbitrum (eip155:42161)
@@ -14,10 +12,13 @@ across all supported blockchains:
 - NEAR Protocol (near:testnet / near:mainnet)
 """
 
+import base64
 import hashlib
+import json
 import logging
 import time
 from typing import Any
+import httpx
 
 from config import settings
 from cs_manager import ChainSignaturesManager
@@ -164,13 +165,13 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
     "near:testnet": [
         {
             "symbol": "USDC",
-            "name": "USD Coin",
+            "name": "USD Coin (Testnet)",
             "decimals": 6,
-            "contractAddress": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760",
+            "contractAddress": "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
         },
         {
             "symbol": "USDT",
-            "name": "Tether USD",
+            "name": "Fake Test Token (usdt.fakes.testnet)",
             "decimals": 6,
             "contractAddress": "usdt.fakes.testnet",
         },
@@ -180,13 +181,13 @@ SUPPORTED_STABLECOINS: dict[str, list[dict[str, Any]]] = {
             "symbol": "USDC",
             "name": "USD Coin",
             "decimals": 6,
-            "contractAddress": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760",
+            "contractAddress": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
         },
         {
             "symbol": "USDT",
             "name": "Tether USD",
             "decimals": 6,
-            "contractAddress": "dac17f958d2ee523a2206206994597c13d831ec7",
+            "contractAddress": "usdt.tether-token.near",
         },
     ],
 }
@@ -265,11 +266,41 @@ def calculate_price_micro(name: str) -> tuple[int, float]:
     return micro, usd
 
 
+def _parse_ft_on_transfer_msg(raw_msg: str, default_owner: str) -> tuple[str, str]:
+    """
+    Mirrors FtOnTransferMsg::parse in contracts/registry/src/lib.rs.
+    Returns (normalized_name, target_owner).
+    """
+    trimmed = raw_msg.strip()
+    if not trimmed:
+        raise ValueError("Empty ft_transfer_call msg")
+    if trimmed.startswith("{"):
+        data = json.loads(trimmed)
+        if not isinstance(data, dict):
+            raise ValueError("Invalid JSON msg object")
+        if "claim" in data and isinstance(data["claim"], dict):
+            inner = data["claim"]
+        elif "register" in data and isinstance(data["register"], dict):
+            inner = data["register"]
+        elif "name" in data:
+            inner = data
+        else:
+            raise ValueError("JSON msg missing 'name', 'claim', or 'register' key")
+        raw_name = str(inner.get("name") or "")
+        owner = str(inner.get("owner") or default_owner).strip().lower()
+        return validate_and_normalize_name(raw_name), owner
+
+    return validate_and_normalize_name(trimmed), default_owner.strip().lower()
+
+
 class CheckoutAdapter:
     def __init__(self, near_client: NearContractClient, cs_manager: ChainSignaturesManager):
         self.near_client = near_client
         self.cs_manager = cs_manager
         self.sessions: dict[str, dict[str, Any]] = {}
+        self.used_tx_hashes: set[str] = set()
+        self.in_flight_tx_hashes: set[str] = set()
+        self.in_flight_sessions: set[str] = set()
 
     def get_supported_stables_catalog(self) -> list[dict[str, Any]]:
         """Returns the structured list of all supported chains and accepted stablecoins."""
@@ -285,21 +316,17 @@ class CheckoutAdapter:
     def find_payment_asset(self, chain_id: str, token_query: str) -> dict[str, Any] | None:
         """Finds matching stablecoin or intent-routable asset metadata by symbol or address."""
         q = token_query.strip().lower()
-        # 1. Check supported stablecoins
         for tok in SUPPORTED_STABLECOINS.get(chain_id, []):
             if tok["symbol"].lower() == q or tok["contractAddress"].lower() == q:
                 res = dict(tok)
                 res["isStable"] = True
                 res["priceUsd"] = 1.0
                 return res
-
-        # 2. Check intent-routable assets
         for tok in INTENT_ROUTABLE_ASSETS.get(chain_id, []):
             if tok["symbol"].lower() == q or tok["contractAddress"].lower() == q:
                 res = dict(tok)
                 res["isStable"] = False
                 return res
-
         return None
 
     def find_stablecoin(self, chain_id: str, token_query: str) -> dict[str, Any] | None:
@@ -314,11 +341,15 @@ class CheckoutAdapter:
         clean_name = validate_and_normalize_name(name)
         micro_units, usd_price = calculate_price_micro(clean_name)
 
-        # Check availability on contract
         record = await self.near_client.get_record(clean_name)
         available = record is None
 
         label = clean_name[:-4]
+        usdc_contract = (
+            "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+            if settings.NEAR_NETWORK == "mainnet"
+            else "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af"
+        )
         return {
             "name": clean_name,
             "label": label,
@@ -326,7 +357,7 @@ class CheckoutAdapter:
             "available": available,
             "priceUsd": usd_price,
             "priceMicroUnits": str(micro_units),
-            "settlementAsset": "USDC on NEAR Protocol (nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760)",
+            "settlementAsset": f"USDC on NEAR Protocol (nep141:{usdc_contract})",
             "supportedChains": self.get_supported_stables_catalog(),
         }
 
@@ -360,7 +391,6 @@ class CheckoutAdapter:
                 f"Accepted stablecoins: {supported_syms}; or intent-routable assets: {intent_syms}"
             )
 
-        # Ensure name is available
         record = await self.near_client.get_record(clean_name)
         if record is not None:
             raise ValueError(f"Domain '{clean_name}' is already registered and not available.")
@@ -369,10 +399,6 @@ class CheckoutAdapter:
         decimals = asset_meta["decimals"]
         is_stable = asset_meta["isStable"]
 
-        # Slippage & cross-chain execution buffer:
-        # - Native NEAR stables: 0.0 (direct 1:1 settlement, no swap slippage)
-        # - Foreign cross-chain stables: $1.00 (absorbs bridge fees & solver execution variance)
-        # - Volatile intent-swap assets: $1.50 (absorbs DEX swap slippage & market drift)
         if norm_chain.startswith("near:") and is_stable:
             buffer_usd = 0.0
         elif is_stable:
@@ -394,14 +420,12 @@ class CheckoutAdapter:
             amount_base = int(round(token_qty * 10**decimals))
             amount_formatted = f"{token_qty} {asset_meta['symbol']}"
 
-        # Deterministic checkout seed bound to (name, owner, chain, token)
         clean_owner = owner.strip().lower()
         chk_preimage = f"{clean_name}:{clean_owner}:{norm_chain}:{asset_meta['symbol']}".encode("utf-8")
         checkout_id = f"chk_{hashlib.sha256(chk_preimage).hexdigest()[:16]}"
         now = int(time.time())
-        expires_at = now + 3600  # 1 hour expiry
+        expires_at = now + 3600
 
-        # Derive deposit address for foreign chains, or contract address for NEAR
         deposit_memo = None
         if norm_chain.startswith("near:"):
             deposit_address = settings.REGISTRY_CONTRACT_ID
@@ -417,7 +441,6 @@ class CheckoutAdapter:
                     f"The Intent Router will swap to USDC on NEAR and register {clean_name} for {owner}."
                 )
         else:
-            # Deterministic Chain Signatures deposit address bound to (name, owner, chain)
             derived = self.cs_manager.derive_deposit_address(f"checkout:{clean_name}:{clean_owner}", norm_chain)
             deposit_address = derived["depositAddress"]
             if is_stable:
@@ -456,7 +479,7 @@ class CheckoutAdapter:
             "depositAddress": deposit_address,
             "depositMemo": deposit_memo,
             "refundTo": refund_to,
-            "status": "PENDING_PAYMENT",  # PENDING_PAYMENT, PROCESSING, COMPLETED, FAILED, REFUNDED
+            "status": "PENDING_PAYMENT",
             "paymentRef": f"{norm_chain}:{asset_meta['symbol']}:{checkout_id}",
             "nearTxHash": None,
             "instructions": instructions,
@@ -471,14 +494,119 @@ class CheckoutAdapter:
     def get_checkout_session(self, checkout_id: str) -> dict[str, Any] | None:
         return self.sessions.get(checkout_id)
 
+    async def verify_payment_on_chain(self, session: dict[str, Any], tx_hash: str) -> None:
+        """
+        Verifies on-chain payment finality (strictly final_execution_status == 'FINAL'),
+        token contract, recipient, ft_transfer_call msg binding, and net retained amount on NEAR.
+        Accepts only NEP-141 ft_transfer_call (rejecting plain ft_transfer).
+        Rejects non-NEAR chains in live mode because automated cross-chain MPC sweeping is not enabled.
+        """
+        chain = session["chain"]
+        expected_amount = int(session["amount"])
+        expected_recipient = session["depositAddress"]
+        token_contract = session["tokenContract"]
+        expected_name = session["name"]
+        expected_owner = session["owner"].strip().lower()
+
+        if not chain.startswith("near:"):
+            raise ValueError(
+                f"PAYMENT_UNVERIFIED: Live cross-chain checkout settlement is not enabled for {chain} "
+                "because automated MPC sweeping is not active. Use direct NEAR NEP-141 payment."
+            )
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": "unam-verify-tx",
+            "method": "EXPERIMENTAL_tx_status",
+            "params": {
+                "tx_hash": tx_hash,
+                "sender_account_id": session["owner"],
+                "wait_until": "FINAL",
+            },
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(settings.NEAR_RPC_URL, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        result = data.get("result") or {}
+        final_exec = result.get("final_execution_status")
+        if final_exec != "FINAL":
+            raise ValueError(
+                f"PAYMENT_UNVERIFIED: NEAR transaction has not reached FINAL execution (status={final_exec})."
+            )
+
+        status = result.get("status") or {}
+        if "SuccessValue" not in status:
+            raise ValueError("PAYMENT_UNVERIFIED: NEAR transaction did not succeed on-chain.")
+
+        for outcome in result.get("receipts_outcome") or []:
+            ostatus = (outcome.get("outcome") or {}).get("status") or {}
+            if "Failure" in ostatus:
+                raise ValueError("PAYMENT_UNVERIFIED: A receipt in the NEAR transaction failed.")
+
+        tx_obj = result.get("transaction") or {}
+        tx_signer = str(tx_obj.get("signer_id") or session["owner"]).strip().lower()
+        if tx_obj.get("receiver_id") != token_contract:
+            raise ValueError(
+                f"PAYMENT_UNVERIFIED: Expected token contract '{token_contract}', got '{tx_obj.get('receiver_id')}'."
+            )
+
+        actions = tx_obj.get("actions") or []
+        matched_transfer_call = False
+        for act in actions:
+            fn = act.get("FunctionCall")
+            if not fn or fn.get("method_name") != "ft_transfer_call":
+                continue
+            raw_args = base64.b64decode(fn.get("args", "")).decode("utf-8")
+            parsed_args = json.loads(raw_args)
+            if (
+                parsed_args.get("receiver_id") == expected_recipient
+                and int(parsed_args.get("amount", "0")) >= expected_amount
+            ):
+                raw_msg = str(parsed_args.get("msg") or "")
+                try:
+                    msg_name, msg_owner = _parse_ft_on_transfer_msg(raw_msg, tx_signer)
+                except Exception as exc:
+                    raise ValueError(
+                        f"PAYMENT_UNVERIFIED: Invalid ft_transfer_call msg '{raw_msg}': {exc}"
+                    ) from exc
+                if msg_name != expected_name or msg_owner != expected_owner:
+                    raise ValueError(
+                        f"PAYMENT_UNVERIFIED: ft_transfer_call msg target ({msg_name}, {msg_owner}) "
+                        f"does not match checkout session ({expected_name}, {expected_owner})."
+                    )
+                matched_transfer_call = True
+                break
+
+        if not matched_transfer_call:
+            raise ValueError(
+                "PAYMENT_UNVERIFIED: Valid NEP-141 ft_transfer_call to checkout depositAddress with required amount and msg not found."
+            )
+
+        raw_sv = status.get("SuccessValue") or ""
+        try:
+            decoded_sv = base64.b64decode(raw_sv).decode("utf-8").strip()
+            net_used = int(json.loads(decoded_sv))
+        except Exception as exc:
+            raise ValueError(
+                "PAYMENT_UNVERIFIED: Could not decode net used amount from ft_transfer_call SuccessValue."
+            ) from exc
+        if net_used < expected_amount:
+            raise ValueError(
+                f"PAYMENT_UNVERIFIED: ft_transfer_call refunded tokens; net used {net_used} < required {expected_amount}."
+            )
+
     async def submit_payment(
         self,
         checkout_id: str,
         tx_hash: str,
     ) -> dict[str, Any]:
         """
-        Submits proof of payment on the foreign chain, executes
-        claim_for on the NEAR contract via the relayer, and finalizes registration.
+        Reserves both tx_hash and checkout_id before any awaited call to prevent concurrency races.
+        In live mode (USE_MOCK_CONTRACT=false), verifies the FINAL NEP-141 ft_transfer_call transaction
+        and confirms on-chain ownership via get_record() without calling execute_claim_for() a second time
+        (since ft_on_transfer already claims atomically on-chain).
         """
         session = self.sessions.get(checkout_id)
         if not session:
@@ -487,18 +615,60 @@ class CheckoutAdapter:
         if session["status"] == "COMPLETED":
             return session
 
+        clean_tx = tx_hash.strip()
+        if not clean_tx or clean_tx.startswith("0xsim_") or len(clean_tx) < 16:
+            raise ValueError("PAYMENT_UNVERIFIED: Invalid or simulated transaction hash.")
+
+        tx_key = f"{session['chain']}:{clean_tx.lower()}"
+        if tx_key in self.used_tx_hashes:
+            raise ValueError("PAYMENT_REPLAYED: Transaction hash has already been used.")
+        if tx_key in self.in_flight_tx_hashes:
+            raise ValueError("PAYMENT_PROCESSING: Transaction hash is currently being processed.")
+        if checkout_id in self.in_flight_sessions:
+            raise ValueError("CHECKOUT_PROCESSING: Checkout session is currently being processed.")
+
+        # Reserve both tx_key and checkout_id synchronously BEFORE the first await
+        self.in_flight_tx_hashes.add(tx_key)
+        self.in_flight_sessions.add(checkout_id)
         session["status"] = "PROCESSING"
-        session["txHash"] = tx_hash
-        payment_ref = f"{session['chain']}:{session['token']}:{tx_hash}"
-        session["paymentRef"] = payment_ref
 
-        # Settle domain claim on the NEAR registry contract
-        result = await self.near_client.execute_claim_for(
-            name=session["name"],
-            owner=session["owner"],
-            payment_ref=payment_ref,
-        )
+        try:
+            if not settings.USE_MOCK_CONTRACT:
+                await self.verify_payment_on_chain(session, clean_tx)
+                record = await self.near_client.get_record(session["name"])
+                expected_owner = session["owner"].strip().lower()
+                actual_owner = str((record or {}).get("owner") or "").strip().lower()
+                if not record or actual_owner != expected_owner:
+                    raise ValueError(
+                        f"PAYMENT_UNVERIFIED: On-chain record for '{session['name']}' is not owned by '{session['owner']}' after ft_transfer_call."
+                    )
+                session["txHash"] = clean_tx
+                payment_ref = f"{session['chain']}:{session['token']}:{clean_tx}"
+                session["paymentRef"] = payment_ref
+                result = {
+                    "status": "SUCCESS",
+                    "tx_hash": clean_tx,
+                    "name": session["name"],
+                    "owner": session["owner"],
+                    "payment_ref": payment_ref,
+                }
+            else:
+                session["txHash"] = clean_tx
+                payment_ref = f"{session['chain']}:{session['token']}:{clean_tx}"
+                session["paymentRef"] = payment_ref
+                result = await self.near_client.execute_claim_for(
+                    name=session["name"],
+                    owner=session["owner"],
+                    payment_ref=payment_ref,
+                )
+        except Exception:
+            session["status"] = "PENDING_PAYMENT"
+            raise
+        finally:
+            self.in_flight_tx_hashes.discard(tx_key)
+            self.in_flight_sessions.discard(checkout_id)
 
+        self.used_tx_hashes.add(tx_key)
         session["status"] = "COMPLETED"
         session["nearTxHash"] = result.get("tx_hash")
         session["completedAt"] = int(time.time())
@@ -510,15 +680,37 @@ class CheckoutAdapter:
         checkout_id: str,
         event: str = "SUCCESS",
     ) -> dict[str, Any]:
-        """Simulates checkout payment completion for demo or test environments."""
+        """
+        Simulates checkout payment completion for controlled Testnet demo or mock environments.
+        Strictly disabled on Mainnet or when ALLOW_DEMO_ENDPOINTS=false and USE_MOCK_CONTRACT=false.
+        """
+        if settings.NEAR_NETWORK == "mainnet" or (
+            not settings.USE_MOCK_CONTRACT and not settings.ALLOW_DEMO_ENDPOINTS
+        ):
+            raise PermissionError(
+                "SIMULATION_DISABLED_IN_LIVE_MODE: /v1/checkout/simulate is disabled outside controlled testnet/mock demo mode."
+            )
+
         session = self.sessions.get(checkout_id)
         if not session:
             raise ValueError("Checkout session not found.")
 
         if event == "SUCCESS":
             fake_tx_hash = f"0xsim_{hashlib.sha256(checkout_id.encode()).hexdigest()[:32]}"
-            return await self.submit_payment(checkout_id, fake_tx_hash)
-        else:
-            session["status"] = event
-            session["updatedAt"] = int(time.time())
+            payment_ref = f"sim:{session['chain']}:{session['token']}:{checkout_id}"
+            result = await self.near_client.execute_claim_for(
+                name=session["name"],
+                owner=session["owner"],
+                payment_ref=payment_ref,
+            )
+            session["status"] = "COMPLETED"
+            session["txHash"] = fake_tx_hash
+            session["paymentRef"] = payment_ref
+            session["nearTxHash"] = result.get("tx_hash")
+            session["completedAt"] = int(time.time())
+            session["receipt"] = result
             return session
+
+        session["status"] = event
+        session["updatedAt"] = int(time.time())
+        return session
