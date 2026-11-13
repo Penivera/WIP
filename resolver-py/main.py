@@ -1,9 +1,12 @@
+import hmac
 import time
-from fastapi import FastAPI, HTTPException, Query
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
+from config import settings
 from cs_manager import ChainSignaturesManager
 from erc7930 import (
     SOLANA_MAINNET_CAIP2,
@@ -11,7 +14,7 @@ from erc7930 import (
     encode_erc7930,
     format_native_address,
 )
-from near_client import NearContractClient
+from near_client import NearContractClient, NearRpcError
 from offramp_adapter import OffRampAdapter
 from proofs import (
     RESOLVER_PUBKEY_HEX,
@@ -41,10 +44,43 @@ checkout_adapter = CheckoutAdapter(near_client, cs_manager)
 PAYMENT_DASHBOARD: dict[str, dict] = {}
 
 
+def require_admin_auth(x_admin_token: str | None = Header(default=None)) -> None:
+    """
+    Protects privileged admin and demo state-transition endpoints.
+    - Whenever ADMIN_API_TOKEN is configured, a matching X-Admin-Token header is strictly required.
+    - When ADMIN_API_TOKEN is empty: allowed only in mock mode or controlled Testnet demo mode
+      (ALLOW_DEMO_ENDPOINTS=true on testnet); strictly rejected on Mainnet or when ALLOW_DEMO_ENDPOINTS=false.
+    """
+    configured_token = settings.ADMIN_API_TOKEN
+    if configured_token:
+        if not x_admin_token or not hmac.compare_digest(x_admin_token, configured_token):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "ADMIN_UNAUTHORIZED",
+                    "message": "Valid X-Admin-Token header is required.",
+                },
+            )
+        return
+
+    if settings.NEAR_NETWORK == "mainnet" or (
+        not settings.USE_MOCK_CONTRACT and not settings.ALLOW_DEMO_ENDPOINTS
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "ADMIN_ENDPOINT_DISABLED",
+                "message": "ADMIN_API_TOKEN is required when demo endpoints are disabled or on mainnet.",
+            },
+        )
+
+
 def _extract_policy_target(policy: dict) -> tuple[str, str, str, str, dict | None]:
     """
     Extracts (mode, dest_chain, dest_asset_str, recipient_address, payout_meta)
     from the Rust contract's ReceivePolicy JSON.
+    In Bank Mode, uses policy.default.Asset as the destination and validates
+    chain, USDC token, and address format.
     """
     default_opt = policy.get("default")
     payout_opt = policy.get("payout")
@@ -60,22 +96,36 @@ def _extract_policy_target(policy: dict) -> tuple[str, str, str, str, dict | Non
         fallback_addr = format_native_address(fallback_chain, bytes(asset_obj["address"]))
 
     if payout_opt and "Payout" in payout_opt:
+        if not (default_opt and "Asset" in default_opt):
+            raise ValueError(
+                "BANK_POLICY_INVALID: Bank payout policy requires a default Asset destination."
+            )
         payout_obj = payout_opt["Payout"]
         ref = payout_obj["reference"]
-        prov_entry = offramp.get_provider_ref(ref)
-        if prov_entry and prov_entry.get("kycStatus") == "VERIFIED":
-            recipient = prov_entry["virtualSolanaUsdcAddress"]
-        else:
-            recipient = fallback_addr
+        prov_id = payout_obj["provider"]
+        is_verified, verify_reason = offramp.validate_bank_destination(
+            ref=ref,
+            provider=prov_id,
+            chain_key=fallback_chain,
+            asset_str=fallback_asset,
+            address=fallback_addr,
+        )
+        is_uncontrolled_sample = offramp.is_uncontrolled_sample_address(fallback_addr)
         return (
             "bank",
-            SOLANA_MAINNET_CAIP2,
-            "USDC",
-            recipient,
+            fallback_chain,
+            fallback_asset,
+            fallback_addr,
             {
                 "type": "bank",
-                "provider": payout_obj["provider"],
+                "provider": prov_id,
                 "ref": ref,
+                "verified": is_verified,
+                "verifyReason": verify_reason,
+                "simulated": True,
+                "uncontrolledSampleAddress": is_uncontrolled_sample,
+                "destChain": fallback_chain,
+                "destToken": "USDC",
                 "fallbackAddress": fallback_addr,
             },
         )
@@ -106,10 +156,15 @@ async def resolve(
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
 
+    # STEP 1: Query Registry (propagate RPC failures as 503 instead of 404 NAME_NOT_FOUND)
+    try:
+        record = await near_client.get_record(clean_name)
+    except NearRpcError as err:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "NEAR_RPC_UNAVAILABLE", "message": str(err)},
+        )
 
-    # STEP 1: Unknown Name -> 404 NAME_NOT_FOUND
-
-    record = await near_client.get_record(clean_name)
     if not record:
         raise HTTPException(
             status_code=404,
@@ -123,12 +178,27 @@ async def resolve(
     record_gen = int(record.get("generation", 1))
     chains_map = record.get("chains") or {}
     policy = record.get("policy")
+
     has_policy_target = bool(policy and (policy.get("default") or policy.get("payout")))
     force_default = bool(has_policy_target and policy.get("force_default", False))
 
     async def build_routed_response() -> dict:
-        mode, dest_chain, dest_asset, recipient_addr, payout_meta = _extract_policy_target(policy)
         try:
+            mode, dest_chain, dest_asset, recipient_addr, payout_meta = _extract_policy_target(
+                policy
+            )
+            effective_live_quote = live_quote
+            sandbox_live_blocked = False
+            if (
+                mode == "bank"
+                and payout_meta
+                and payout_meta.get("uncontrolledSampleAddress")
+                and live_quote
+                and not dry
+            ):
+                effective_live_quote = False
+                sandbox_live_blocked = True
+
             route_res = await router.resolve_route(
                 name=clean_name,
                 source_chain=norm_chain,
@@ -139,7 +209,7 @@ async def resolve(
                 amount_in=amount,
                 refund_to=refund_to,
                 dry=dry,
-                live_1click_quote=live_quote,
+                live_1click_quote=effective_live_quote,
             )
         except ValueError as err:
             raise HTTPException(status_code=400, detail={"error": str(err)})
@@ -158,6 +228,25 @@ async def resolve(
         out_sym = route_res["destSymbol"]
         src_sym = route_res["sourceSymbol"]
         est_mins = max(1, round(route_res["timeEstimateSeconds"] / 60))
+
+        warnings = list(route_res["warnings"])
+        if sandbox_live_blocked:
+            warnings.append(
+                "SANDBOX_SAMPLE_ADDRESS_BLOCKED: Live 1Click quote disabled because destination is an uncontrolled sample address."
+            )
+        if mode == "bank" and payout_meta and not payout_meta.get("verified", True):
+            warnings.append(
+                "OFFRAMP_REFERENCE_UNVERIFIED: Off-ramp provider reference or KYC is unverified; "
+                "funds remain at the configured fallback destination and bank settlement has not occurred."
+            )
+
+        if mode == "bank":
+            if payout_meta and payout_meta.get("verified", True):
+                bank_suffix = " (settled to linked bank account, simulated)."
+            else:
+                bank_suffix = " (funds remain at configured fallback destination; bank settlement has not occurred)."
+        else:
+            bank_suffix = "."
 
         PAYMENT_DASHBOARD[dep_addr] = {
             "name": clean_name,
@@ -207,10 +296,10 @@ async def resolve(
                 "correlationId": route_res["correlationId"],
                 "summary": (
                     f"Recipient will receive about {route_res['estReceiveFormatted']} {out_sym} on {dest_chain.split(':')[0].capitalize()}"
-                    + (" (settled to linked bank account)." if mode == "bank" else ".")
+                    + bank_suffix
                     + f" Estimated time {est_mins} min. Fee {route_res['fee']['totalFeeBps']} bps."
                 ),
-                "warnings": route_res["warnings"],
+                "warnings": warnings,
                 "resolverPubkey": RESOLVER_PUBKEY_HEX,
             },
         }
@@ -219,15 +308,11 @@ async def resolve(
         body["signature"] = sig
         return body
 
-
     # STEP 2: If force_default is True -> Route via Receive Policy
-
     if force_default:
         return await build_routed_response()
 
-
     # STEP 3: Direct Connected Wallet Lookup (if present & proof is valid)
-
     chain_rec = chains_map.get(norm_chain)
     if chain_rec:
         raw_addr = bytes(chain_rec["address"])
@@ -255,7 +340,6 @@ async def resolve(
 
         human_addr = format_native_address(norm_chain, raw_addr)
         interop_hex = encode_erc7930(norm_chain, raw_addr)
-
         body = {
             "name": clean_name,
             "mode": "direct",
@@ -275,15 +359,11 @@ async def resolve(
         body["signature"] = sig
         return body
 
-
     # STEP 4: Fallback to Default Receive Policy if Configured
-
     if has_policy_target:
         return await build_routed_response()
 
-
     # STEP 5: Honest Failure -> NO_RECORD
-
     raise HTTPException(
         status_code=404,
         detail={
@@ -295,8 +375,7 @@ async def resolve(
     )
 
 
-#  1CLICK DEPOSIT SUBMIT & LIVE STATUS TRACKING ENDPOINTS
-
+# 1CLICK DEPOSIT SUBMIT & LIVE STATUS TRACKING ENDPOINTS
 class SubmitDepositRequest(BaseModel):
     depositAddress: str
     txHash: str
@@ -337,7 +416,14 @@ async def check_swap_status(
 
         if live_status == "SUCCESS" and entry["mode"] == "bank" and entry.get("payoutMeta"):
             pm = entry["payoutMeta"]
-            receipt = offramp.execute_payout(pm["ref"], entry["estReceive"], pm["fallbackAddress"])
+            receipt = offramp.execute_payout(
+                ref=pm["ref"],
+                usdc_amount=entry["estReceive"],
+                owner_fallback_wallet=pm["fallbackAddress"],
+                provider=pm["provider"],
+                dest_chain=pm.get("destChain"),
+                dest_token=pm.get("destToken", "USDC"),
+            )
             entry["status"] = receipt["status"]
             entry["offrampReceipt"] = receipt
 
@@ -345,7 +431,6 @@ async def check_swap_status(
 
 
 # PHASE 3: CHAIN SIGNATURES DERIVATION ENDPOINT
-
 @app.get("/v1/cs/derive")
 async def cs_derive_address(name: str, chain: str):
     try:
@@ -356,7 +441,6 @@ async def cs_derive_address(name: str, chain: str):
 
 
 # DASHBOARD & DEMO SIMULATION ENDPOINTS
-
 @app.get("/v1/dashboard/{name}")
 async def get_dashboard(name: str):
     try:
@@ -372,18 +456,22 @@ class SimulateTransitionRequest(BaseModel):
     event: str = "SUCCESS"  # "SUCCESS", "REFUNDED", "OFFRAMP_REJECT"
 
 
-@app.post("/v1/demo/transition")
+@app.post("/v1/demo/transition", dependencies=[Depends(require_admin_auth)])
 async def simulate_payment_transition(req: SimulateTransitionRequest):
     if req.deposit_address not in PAYMENT_DASHBOARD:
         raise HTTPException(status_code=404, detail={"error": "DEPOSIT_NOT_FOUND"})
-
     entry = PAYMENT_DASHBOARD[req.deposit_address]
     payout_meta = entry.get("payoutMeta")
 
     if req.event == "OFFRAMP_REJECT" and payout_meta:
         offramp.set_kyc_status(payout_meta["ref"], "LAPSED")
         receipt = offramp.execute_payout(
-            payout_meta["ref"], entry["estReceive"], payout_meta["fallbackAddress"]
+            ref=payout_meta["ref"],
+            usdc_amount=entry["estReceive"],
+            owner_fallback_wallet=payout_meta["fallbackAddress"],
+            provider=payout_meta["provider"],
+            dest_chain=payout_meta.get("destChain"),
+            dest_token=payout_meta.get("destToken", "USDC"),
         )
         entry["status"] = receipt["status"]
         entry["offrampReceipt"] = receipt
@@ -391,7 +479,12 @@ async def simulate_payment_transition(req: SimulateTransitionRequest):
         if entry["mode"] == "bank" and payout_meta:
             offramp.set_kyc_status(payout_meta["ref"], "VERIFIED")
             receipt = offramp.execute_payout(
-                payout_meta["ref"], entry["estReceive"], payout_meta["fallbackAddress"]
+                ref=payout_meta["ref"],
+                usdc_amount=entry["estReceive"],
+                owner_fallback_wallet=payout_meta["fallbackAddress"],
+                provider=payout_meta["provider"],
+                dest_chain=payout_meta.get("destChain"),
+                dest_token=payout_meta.get("destToken", "USDC"),
             )
             entry["status"] = receipt["status"]
             entry["offrampReceipt"] = receipt
@@ -399,12 +492,10 @@ async def simulate_payment_transition(req: SimulateTransitionRequest):
             entry["status"] = "SUCCESS"
     else:
         entry["status"] = req.event
-
     return entry
 
 
 # MULTICHAIN STABLECOIN CHECKOUT ENDPOINTS (Domain Purchasing)
-
 class CreateCheckoutRequest(BaseModel):
     name: str
     owner: str
@@ -438,6 +529,11 @@ async def get_checkout_pricing(
         return await checkout_adapter.get_pricing_and_availability(name)
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
+    except NearRpcError as err:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "NEAR_RPC_UNAVAILABLE", "message": str(err)},
+        )
 
 
 @app.post("/v1/checkout/session")
@@ -459,6 +555,11 @@ async def create_checkout_session(req: CreateCheckoutRequest):
         if "already registered" in msg:
             raise HTTPException(status_code=409, detail={"error": "NAME_TAKEN", "message": msg})
         raise HTTPException(status_code=400, detail={"error": "CHECKOUT_FAILED", "message": msg})
+    except NearRpcError as err:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "NEAR_RPC_UNAVAILABLE", "message": str(err)},
+        )
 
 
 @app.get("/v1/checkout/session/{checkout_id}")
@@ -473,7 +574,7 @@ async def get_checkout_session(checkout_id: str):
 @app.post("/v1/checkout/submit")
 async def submit_checkout_payment(req: SubmitCheckoutPaymentRequest):
     """
-    Submits on-chain payment txHash. Settles domain claim on the NEAR contract via relayer.
+    Submits on-chain payment txHash. Verifies payment on-chain in live mode before settling.
     """
     try:
         return await checkout_adapter.submit_payment(
@@ -482,25 +583,46 @@ async def submit_checkout_payment(req: SubmitCheckoutPaymentRequest):
         )
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
+    except NearRpcError as err:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "NEAR_RPC_UNAVAILABLE", "message": str(err)},
+        )
+    except RuntimeError as err:
+        raise HTTPException(
+            status_code=502, detail={"error": "CONTRACT_TX_FAILED", "message": str(err)}
+        )
 
 
 @app.post("/v1/checkout/simulate")
 async def simulate_checkout_payment(req: SimulateCheckoutRequest):
-    """Simulates payment completion for test/demo environments."""
+    """
+    Simulates payment completion for controlled Testnet demo or mock environments.
+    Disabled on Mainnet or when ALLOW_DEMO_ENDPOINTS=false and USE_MOCK_CONTRACT=false.
+    """
     try:
         return await checkout_adapter.simulate_payment(
             checkout_id=req.checkout_id,
             event=req.event,
         )
+    except PermissionError as err:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "SIMULATION_DISABLED_IN_LIVE_MODE", "message": str(err)},
+        )
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
+    except RuntimeError as err:
+        raise HTTPException(
+            status_code=502, detail={"error": "CONTRACT_TX_FAILED", "message": str(err)}
+        )
 
 
 class ApprovePolicyRequest(BaseModel):
     name: str
 
 
-@app.post("/v1/admin/approve-policy")
+@app.post("/v1/admin/approve-policy", dependencies=[Depends(require_admin_auth)])
 async def admin_approve_policy(req: ApprovePolicyRequest):
     """
     Admin path to approve and immediately apply a queued destination / policy change,
@@ -511,6 +633,10 @@ async def admin_approve_policy(req: ApprovePolicyRequest):
         return await near_client.admin_approve_pending_policy(clean_name)
     except ValueError as err:
         raise HTTPException(status_code=400, detail={"error": str(err)})
+    except RuntimeError as err:
+        raise HTTPException(
+            status_code=502, detail={"error": "CONTRACT_TX_FAILED", "message": str(err)}
+        )
 
 
 if __name__ == "__main__":
