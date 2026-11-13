@@ -12,15 +12,21 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def reset_mock_state(monkeypatch):
     monkeypatch.setattr(settings, "USE_MOCK_CONTRACT", True)
+    monkeypatch.setattr(settings, "NEAR_NETWORK", "testnet")
+    monkeypatch.setattr(settings, "ALLOW_DEMO_ENDPOINTS", True)
+    monkeypatch.setattr(settings, "ADMIN_API_TOKEN", "")
     checkout_adapter.sessions.clear()
+    checkout_adapter.used_tx_hashes.clear()
+    checkout_adapter.in_flight_tx_hashes.clear()
+    checkout_adapter.in_flight_sessions.clear()
 
 
 def test_checkout_chains_catalog():
     resp = client.get("/v1/checkout/chains")
     assert resp.status_code == 200
     catalog = resp.json()
-
     chain_ids = [entry["chainId"] for entry in catalog]
+
     expected_chains = [
         "eip155:1",      # Ethereum
         "eip155:8453",   # Base
@@ -36,14 +42,12 @@ def test_checkout_chains_catalog():
     for exp in expected_chains:
         assert exp in chain_ids, f"Expected {exp} in supported chains catalog"
 
-    # Verify each chain has at least one stablecoin (USDC or USDT)
     for entry in catalog:
         symbols = [t["symbol"] for t in entry["tokens"]]
         assert any(s in symbols for s in ["USDC", "USDT"]), f"No stables found on {entry['chainId']}"
 
 
 def test_pricing_and_availability_tiered():
-    # 3-char name: $50
     resp_3 = client.get("/v1/checkout/pricing?name=cat.uni")
     assert resp_3.status_code == 200
     data_3 = resp_3.json()
@@ -51,7 +55,6 @@ def test_pricing_and_availability_tiered():
     assert data_3["priceUsd"] == 50.0
     assert data_3["priceMicroUnits"] == "50000000"
 
-    # 4-char name: $20
     resp_4 = client.get("/v1/checkout/pricing?name=moon.uni")
     assert resp_4.status_code == 200
     data_4 = resp_4.json()
@@ -59,7 +62,6 @@ def test_pricing_and_availability_tiered():
     assert data_4["priceUsd"] == 20.0
     assert data_4["priceMicroUnits"] == "20000000"
 
-    # 5+ char name: $5
     resp_5 = client.get("/v1/checkout/pricing?name=stellar.uni")
     assert resp_5.status_code == 200
     data_5 = resp_5.json()
@@ -67,7 +69,6 @@ def test_pricing_and_availability_tiered():
     assert data_5["priceUsd"] == 5.0
     assert data_5["priceMicroUnits"] == "5000000"
 
-    # Already claimed name: peni.uni
     resp_taken = client.get("/v1/checkout/pricing?name=peni.uni")
     assert resp_taken.status_code == 200
     assert resp_taken.json()["available"] is False
@@ -98,12 +99,11 @@ def test_create_checkout_session_all_chains_usdc(chain_key: str, expected_chain_
     resp = client.post("/v1/checkout/session", json=req_body)
     assert resp.status_code == 200, f"Failed for {chain_key}: {resp.text}"
     session = resp.json()
-
     assert session["chain"] == expected_chain_id
     assert session["token"] == "USDC"
     assert session["status"] == "PENDING_PAYMENT"
     assert session["depositAddress"] is not None
-    assert session["priceUsd"] == 5.0  # 5+ chars name costs $5
+    assert session["priceUsd"] == 5.0
     assert "instructions" in session
     assert session["checkoutId"].startswith("chk_")
 
@@ -127,7 +127,6 @@ def test_create_checkout_session_usdt(chain_key: str):
 
 
 def test_checkout_rejects_unsupported_tokens_and_chains():
-    # Reject non-supported token (e.g. DOGE, SHIB)
     resp = client.post(
         "/v1/checkout/session",
         json={
@@ -140,7 +139,6 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
     assert resp.status_code == 400
     assert "Unsupported payment asset" in resp.json()["detail"]["message"]
 
-    # Reject unsupported chain with unknown namespace
     resp_cosmo = client.post(
         "/v1/checkout/session",
         json={
@@ -153,7 +151,6 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
     assert resp_cosmo.status_code == 400
     assert "CHAIN_KEY_INVALID" in resp_cosmo.json()["detail"]["message"]
 
-    # Reject unsupported chain with valid namespace but not in catalog
     resp_evm = client.post(
         "/v1/checkout/session",
         json={
@@ -168,7 +165,6 @@ def test_checkout_rejects_unsupported_tokens_and_chains():
 
 
 def test_create_checkout_session_intent_routed_assets():
-    # 1. Pay with ETH on Base
     resp_eth = client.post(
         "/v1/checkout/session",
         json={
@@ -186,7 +182,6 @@ def test_create_checkout_session_intent_routed_assets():
     assert "USDC (NEAR Protocol)" in sess_eth["settlementAsset"]
     assert "Intent Router will swap" in sess_eth["instructions"]
 
-    # 2. Pay with SOL on Solana
     resp_sol = client.post(
         "/v1/checkout/session",
         json={
@@ -202,7 +197,6 @@ def test_create_checkout_session_intent_routed_assets():
     assert sess_sol["isStable"] is False
     assert sess_sol["settlementType"] == "INTENT_SWAP_SETTLEMENT"
 
-    # 3. Pay with DAI on Ethereum
     resp_dai = client.post(
         "/v1/checkout/session",
         json={
@@ -236,7 +230,6 @@ def test_checkout_settlement_and_lifecycle():
     domain = "checkout-demo.uni"
     owner = "demobuyer.testnet"
 
-    # 1. Create checkout session on Base
     resp_create = client.post(
         "/v1/checkout/session",
         json={
@@ -251,12 +244,10 @@ def test_checkout_settlement_and_lifecycle():
     chk_id = session["checkoutId"]
     assert session["status"] == "PENDING_PAYMENT"
 
-    # 2. Query session
     resp_get = client.get(f"/v1/checkout/session/{chk_id}")
     assert resp_get.status_code == 200
     assert resp_get.json()["status"] == "PENDING_PAYMENT"
 
-    # 3. Submit foreign-chain payment transaction hash
     tx_hash = "0x8849f2b314a5160e1d89b027150c95ef2294125b2d713c77d6baad19c35b801a"
     resp_submit = client.post(
         "/v1/checkout/submit",
@@ -271,12 +262,10 @@ def test_checkout_settlement_and_lifecycle():
     assert completed["nearTxHash"] is not None
     assert completed["completedAt"] is not None
 
-    # 4. Verify session reflects COMPLETED on subsequent lookup
     resp_get_after = client.get(f"/v1/checkout/session/{chk_id}")
     assert resp_get_after.status_code == 200
     assert resp_get_after.json()["status"] == "COMPLETED"
 
-    # 5. Domain is now registered
     resp_pricing = client.get(f"/v1/checkout/pricing?name={domain}")
     assert resp_pricing.status_code == 200
     assert resp_pricing.json()["available"] is False
@@ -330,32 +319,22 @@ def test_admin_approve_policy_endpoint():
         },
     }
 
-    # 1. Admin approves the pending policy change
     resp = client.post("/v1/admin/approve-policy", json={"name": name})
     assert resp.status_code == 200
     assert resp.json()["status"] == "APPROVED"
     assert resp.json()["name"] == name
 
-    # 2. Record now has policy applied and pending cleared
     rec = MOCK_CONTRACT_RECORDS[name]
     assert rec["policy"] is not None
     assert rec["policy"]["force_default"] is True
     assert rec.get("pending") is None
 
-    # 3. Second call fails with NO_PENDING_CHANGE
     resp_again = client.post("/v1/admin/approve-policy", json={"name": name})
     assert resp_again.status_code == 400
     assert "NO_PENDING_CHANGE" in resp_again.json()["detail"]["error"]
 
 
 def test_deterministic_checkout_id_and_deposit_address():
-    """
-    Verifies that checkout ID and derived deposit addresses are completely deterministic:
-    1. Multiple calls with same (name, owner, chain, token) yield identical checkout IDs and deposit addresses.
-    2. Derived deposit address matches /v1/cs/derive for the same name and chain.
-    3. Works across EVM (Base) and Solana.
-    """
-    # 1. EVM (Base) deterministic derivation
     req_evm = {
         "name": "deterministic-evm.uni",
         "owner": "buyer.testnet",
@@ -370,18 +349,15 @@ def test_deterministic_checkout_id_and_deposit_address():
     assert resp2.status_code == 200
     session2 = resp2.json()
 
-    # Checkout ID and deposit address MUST be identical
     assert session1["checkoutId"] == session2["checkoutId"]
     assert session1["depositAddress"] == session2["depositAddress"]
     assert session1["depositAddress"].startswith("0x")
 
-    # Must match deterministic cs_manager derivation for checkout:(name):(owner)
     expected_evm_addr = cs_manager.derive_deposit_address(
         "checkout:deterministic-evm.uni:buyer.testnet", "base"
     )["depositAddress"]
     assert session1["depositAddress"] == expected_evm_addr
 
-    # 2. Solana deterministic derivation
     req_sol = {
         "name": "deterministic-sol.uni",
         "owner": "solbuyer.testnet",
@@ -406,13 +382,6 @@ def test_deterministic_checkout_id_and_deposit_address():
 
 
 def test_checkout_slippage_buffer_policy():
-    """
-    Verifies the dynamic slippage buffer policy:
-    1. Direct NEAR stables: buffer = $0.00 (direct 1:1, exact nominal price).
-    2. Foreign cross-chain stables (Base USDC): buffer = $1.00 (absorbs bridge/solver fees).
-    3. Volatile intent-swap assets (Base ETH): buffer = $1.50 (absorbs DEX swap slippage & drift).
-    """
-    # 1. Direct NEAR USDC: $0 buffer
     resp_near = client.post(
         "/v1/checkout/session",
         json={
@@ -429,7 +398,6 @@ def test_checkout_slippage_buffer_policy():
     assert sess_near["totalBilledUsd"] == 5.0
     assert sess_near["amountFormatted"] == "5.00 USDC"
 
-    # 2. Foreign cross-chain USDC on Base: $1.00 buffer
     resp_base = client.post(
         "/v1/checkout/session",
         json={
@@ -446,7 +414,6 @@ def test_checkout_slippage_buffer_policy():
     assert sess_base["totalBilledUsd"] == 6.0
     assert sess_base["amountFormatted"] == "6.00 USDC"
 
-    # 3. Volatile ETH on Base: $1.50 buffer
     resp_eth = client.post(
         "/v1/checkout/session",
         json={
