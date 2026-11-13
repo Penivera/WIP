@@ -14,12 +14,10 @@ across all supported blockchains:
 - NEAR Protocol (near:testnet / near:mainnet)
 """
 
-from dataclasses import dataclass
 import hashlib
 import logging
 import time
 from typing import Any
-import uuid
 
 from config import settings
 from cs_manager import ChainSignaturesManager
