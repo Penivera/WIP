@@ -18,6 +18,11 @@ from erc7930 import (
 
 logger = logging.getLogger(__name__)
 
+
+class NearRpcError(RuntimeError):
+    """Raised when the NEAR RPC cannot be reached or returns an upstream error in live mode."""
+
+
 MOCK_CONTRACT_RECORDS: dict[str, dict] = {
     # 1. peni.uni: Core Mode 1 (ETH, Solana, NEAR connected) + Optional Mode 2 policy (force_default=False)
     "peni.uni": {
@@ -186,7 +191,7 @@ class NearContractClient:
             resp.raise_for_status()
             data = resp.json()
             if "error" in data or "result" not in data or "result" not in data["result"]:
-                raise RuntimeError(f"NEAR RPC error: {data.get('error')}")
+                raise NearRpcError(f"NEAR RPC error: {data.get('error')}")
             raw_bytes = bytes(data["result"]["result"])
             decoded = raw_bytes.decode("utf-8")
             return json.loads(decoded) if decoded else None
@@ -194,28 +199,37 @@ class NearContractClient:
     async def get_record(self, normalized_name: str) -> dict | None:
         if not settings.USE_MOCK_CONTRACT:
             try:
-                # Directly return whatever the blockchain says, even if it is None (null)
                 return await self.call_view_method("get_record", {"name": normalized_name})
             except Exception as exc:
                 logger.error(f"RPC get_record({normalized_name}) failed: {exc}")
-                # Return None on network failure instead of masking it with mock data
-                return None
+                raise NearRpcError(
+                    f"NEAR RPC unavailable while querying {normalized_name}: {exc}"
+                ) from exc
 
-        # Only reach here if USE_MOCK_CONTRACT is explicitly true
         return MOCK_CONTRACT_RECORDS.get(normalized_name)
 
     async def get_pricing_config(self) -> dict:
         if not settings.USE_MOCK_CONTRACT:
             try:
                 res = await self.call_view_method("get_pricing_config", {})
-                if res:
+                if isinstance(res, dict):
                     return res
+                raise NearRpcError("Empty pricing config from NEAR RPC")
             except Exception as exc:
                 logger.error(f"RPC get_pricing_config() failed: {exc}")
+                raise NearRpcError(
+                    f"NEAR RPC unavailable while querying pricing config: {exc}"
+                ) from exc
+
+        default_usdc = (
+            "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+            if settings.NEAR_NETWORK == "mainnet"
+            else "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af"
+        )
         return {
-            "payment_token": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3613760",
+            "payment_token": default_usdc,
             "accepted_tokens": [],
-            "relayer": "shedasolution.testnet",
+            "relayer": settings.REGISTRY_CONTRACT_ID,
             "price_3_char": "50000000",
             "price_4_char": "20000000",
             "price_5_plus_char": "5000000",
@@ -225,10 +239,15 @@ class NearContractClient:
         if not settings.USE_MOCK_CONTRACT:
             try:
                 val = await self.call_view_method("price_for_name", {"name": normalized_name})
-                if val:
+                if val is not None:
                     return int(val)
+                raise NearRpcError("Empty price_for_name result from NEAR RPC")
             except Exception as exc:
                 logger.error(f"RPC price_for_name({normalized_name}) failed: {exc}")
+                raise NearRpcError(
+                    f"NEAR RPC unavailable while querying price for {normalized_name}: {exc}"
+                ) from exc
+
         label = normalized_name[:-4] if normalized_name.endswith(".uni") else normalized_name
         if len(label) == 3:
             return 50_000_000
@@ -240,59 +259,69 @@ class NearContractClient:
     async def execute_claim_for(self, name: str, owner: str, payment_ref: str) -> dict:
         """
         Executes claim_for on the registry contract via the authorized relayer.
-        In live testnet mode, signs and broadcasts using near-cli-rs keychain.
-        In mock or test mode, records the registration directly.
+        When USE_MOCK_CONTRACT is False, signs and broadcasts using near-cli-rs on settings.NEAR_NETWORK
+        and raises RuntimeError on failure (never falls back to simulated success in live mode).
         """
         if not settings.USE_MOCK_CONTRACT:
+            if not settings.ADMIN_PRIVATE_KEY:
+                raise RuntimeError("ADMIN_PRIVATE_KEY is required when USE_MOCK_CONTRACT=false")
+            cmd = [
+                "near",
+                "contract",
+                "call-function",
+                "as-transaction",
+                settings.REGISTRY_CONTRACT_ID,
+                "claim_for",
+                "json-args",
+                json.dumps({"name": name, "owner": owner, "payment_ref": payment_ref}),
+                "prepaid-gas",
+                "100.0 Tgas",
+                "attached-deposit",
+                "0 NEAR",
+                "sign-as",
+                settings.REGISTRY_CONTRACT_ID,
+                "network-config",
+                settings.NEAR_NETWORK,
+                "sign-with-plaintext-private-key",
+                settings.ADMIN_PRIVATE_KEY,
+                "send",
+            ]
             try:
-                cmd = [
-                    "near",
-                    "contract",
-                    "call-function",
-                    "as-transaction",
-                    settings.REGISTRY_CONTRACT_ID,
-                    "claim_for",
-                    "json-args",
-                    json.dumps({"name": name, "owner": owner, "payment_ref": payment_ref}),
-                    "prepaid-gas",
-                    "100.0 Tgas",
-                    "attached-deposit",
-                    "0 NEAR",
-                    "sign-as",
-                    # The live contract's relayer and admin is the contract account itself.
-                    settings.REGISTRY_CONTRACT_ID,
-                    "network-config",
-                    "testnet",
-                    "sign-with-plaintext-private-key",
-                    settings.ADMIN_PRIVATE_KEY,
-                    "send",
-                ]
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await proc.communicate()
-                out_text = stdout.decode()
-                if proc.returncode == 0:
-                    tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
-                    tx_hash = tx_match.group(1) if tx_match else f"tx_{int(time.time())}"
-                    logger.info(f"Live claim_for succeeded for {name}: Tx {tx_hash}")
-                    return {
-                        "status": "SUCCESS",
-                        "tx_hash": tx_hash,
-                        "name": name,
-                        "owner": owner,
-                        "payment_ref": payment_ref,
-                    }
-                else:
-                    logger.warning(
-                        f"Live claim_for command returned {proc.returncode}: {out_text} {stderr.decode()}"
-                    )
             except Exception as exc:
                 logger.error(f"Error calling live claim_for: {exc}")
+                raise RuntimeError(f"Error executing live claim_for: {exc}") from exc
 
-        # Fallback / mock registration
+            out_text = stdout.decode()
+            err_text = stderr.decode()
+            if proc.returncode == 0:
+                tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
+                if not tx_match:
+                    raise RuntimeError(
+                        f"Live claim_for exited 0 but returned no Transaction ID: {out_text}"
+                    )
+                tx_hash = tx_match.group(1)
+                logger.info(f"Live claim_for succeeded for {name}: Tx {tx_hash}")
+                return {
+                    "status": "SUCCESS",
+                    "tx_hash": tx_hash,
+                    "name": name,
+                    "owner": owner,
+                    "payment_ref": payment_ref,
+                }
+            logger.warning(
+                f"Live claim_for command returned {proc.returncode}: {out_text} {err_text}"
+            )
+            raise RuntimeError(
+                f"Live claim_for failed with exit code {proc.returncode}: {err_text or out_text}"
+            )
+
+        # Mock registration (only when USE_MOCK_CONTRACT is explicitly True)
         MOCK_CONTRACT_RECORDS[name] = {
             "owner": owner,
             "generation": 1,
@@ -311,55 +340,67 @@ class NearContractClient:
     async def admin_approve_pending_policy(self, name: str) -> dict:
         """
         Admin approves a queued destination/policy change, bypassing the time delay.
-        In live testnet mode, executes using admin unam-registry.testnet.
-        In mock mode, applies pending policy directly.
+        When USE_MOCK_CONTRACT is False, executes on settings.NEAR_NETWORK and raises RuntimeError on failure.
         """
         clean_name = name.strip().lower()
         if not settings.USE_MOCK_CONTRACT:
+            if not settings.ADMIN_PRIVATE_KEY:
+                raise RuntimeError("ADMIN_PRIVATE_KEY is required when USE_MOCK_CONTRACT=false")
+            cmd = [
+                "near",
+                "contract",
+                "call-function",
+                "as-transaction",
+                settings.REGISTRY_CONTRACT_ID,
+                "admin_approve_pending_policy",
+                "json-args",
+                json.dumps({"name": clean_name}),
+                "prepaid-gas",
+                "100.0 Tgas",
+                "attached-deposit",
+                "0 NEAR",
+                "sign-as",
+                settings.REGISTRY_CONTRACT_ID,
+                "network-config",
+                settings.NEAR_NETWORK,
+                "sign-with-plaintext-private-key",
+                settings.ADMIN_PRIVATE_KEY,
+                "send",
+            ]
             try:
-                cmd = [
-                    "near",
-                    "contract",
-                    "call-function",
-                    "as-transaction",
-                    settings.REGISTRY_CONTRACT_ID,
-                    "admin_approve_pending_policy",
-                    "json-args",
-                    json.dumps({"name": clean_name}),
-                    "prepaid-gas",
-                    "100.0 Tgas",
-                    "attached-deposit",
-                    "0 NEAR",
-                    "sign-as",
-                    settings.REGISTRY_CONTRACT_ID,
-                    "network-config",
-                    "testnet",
-                    "sign-with-plaintext-private-key",
-                    settings.ADMIN_PRIVATE_KEY,
-                    "send",
-                ]
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await proc.communicate()
-                out_text = stdout.decode()
-                if proc.returncode == 0:
-                    tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
-                    tx_hash = tx_match.group(1) if tx_match else f"tx_{int(time.time())}"
-                    logger.info(f"Live admin_approve_pending_policy succeeded for {clean_name}: Tx {tx_hash}")
-                    return {
-                        "status": "APPROVED",
-                        "tx_hash": tx_hash,
-                        "name": clean_name,
-                    }
-                else:
-                    logger.warning(f"Live admin_approve returned {proc.returncode}: {out_text} {stderr.decode()}")
             except Exception as exc:
                 logger.error(f"Error calling live admin_approve: {exc}")
+                raise RuntimeError(f"Error executing live admin_approve: {exc}") from exc
 
-        # Mock mode fallback
+            out_text = stdout.decode()
+            err_text = stderr.decode()
+            if proc.returncode == 0:
+                tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
+                if not tx_match:
+                    raise RuntimeError(
+                        f"Live admin_approve exited 0 but returned no Transaction ID: {out_text}"
+                    )
+                tx_hash = tx_match.group(1)
+                logger.info(
+                    f"Live admin_approve_pending_policy succeeded for {clean_name}: Tx {tx_hash}"
+                )
+                return {
+                    "status": "APPROVED",
+                    "tx_hash": tx_hash,
+                    "name": clean_name,
+                }
+            logger.warning(f"Live admin_approve returned {proc.returncode}: {out_text} {err_text}")
+            raise RuntimeError(
+                f"Live admin_approve_pending_policy failed with exit code {proc.returncode}: {err_text or out_text}"
+            )
+
+        # Mock mode (only when USE_MOCK_CONTRACT is explicitly True)
         rec = MOCK_CONTRACT_RECORDS.get(clean_name)
         if not rec or not rec.get("pending"):
             raise ValueError("NO_PENDING_CHANGE")
