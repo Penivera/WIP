@@ -14,6 +14,7 @@ Concept and technical specification for NEAR HACKATHON 2026 · Nov 7, 2026 · @P
   - **Live Domain:** `peni.uni` &rarr; Owned by `peni.testnet` (Generation 3, with verified EVM address)
 - **Keyless Cross-Chain Callback Abstraction:** Solvers execute `ft_transfer_call` with `{"name": "...", "owner": "..."}`. The contract autonomous callback claims the domain directly to the target buyer with zero relayer private keys to manage.
 - **Multichain Stablecoin & Intent Settlement Guide:** [DOCS_SUPPORTED_STABLES.md](file:///home/peni/Projects/wip/DOCS_SUPPORTED_STABLES.md)
+- **Multichain Wallet Connectivity & WalletConnect Standards:** [DOCS_WALLET_CONNECTIVITY.md](file:///home/peni/Projects/wip/DOCS_WALLET_CONNECTIVITY.md)
 - **Backend Resolver & Router Service:** [resolver-py/README.md](file:///home/peni/Projects/wip/resolver-py/README.md)
 - **License:** [GPLv2 (GNU General Public License v2.0)](file:///home/peni/Projects/wip/LICENSE)
 

@@ -3,7 +3,7 @@ import pytest
 
 from config import settings
 from erc7930 import SOLANA_MAINNET_CAIP2
-from main import app, checkout_adapter
+from main import app, checkout_adapter, cs_manager
 from near_client import MOCK_CONTRACT_RECORDS
 
 client = TestClient(app)
@@ -375,10 +375,11 @@ def test_deterministic_checkout_id_and_deposit_address():
     assert session1["depositAddress"] == session2["depositAddress"]
     assert session1["depositAddress"].startswith("0x")
 
-    # Must match /v1/cs/derive endpoint
-    resp_cs = client.get("/v1/cs/derive?name=deterministic-evm.uni&chain=base")
-    assert resp_cs.status_code == 200
-    assert resp_cs.json()["depositAddress"] == session1["depositAddress"]
+    # Must match deterministic cs_manager derivation for checkout:(name):(owner)
+    expected_evm_addr = cs_manager.derive_deposit_address(
+        "checkout:deterministic-evm.uni:buyer.testnet", "base"
+    )["depositAddress"]
+    assert session1["depositAddress"] == expected_evm_addr
 
     # 2. Solana deterministic derivation
     req_sol = {
@@ -398,9 +399,10 @@ def test_deterministic_checkout_id_and_deposit_address():
     assert session_sol1["checkoutId"] == session_sol2["checkoutId"]
     assert session_sol1["depositAddress"] == session_sol2["depositAddress"]
 
-    resp_sol_cs = client.get("/v1/cs/derive?name=deterministic-sol.uni&chain=solana")
-    assert resp_sol_cs.status_code == 200
-    assert resp_sol_cs.json()["depositAddress"] == session_sol1["depositAddress"]
+    expected_sol_addr = cs_manager.derive_deposit_address(
+        "checkout:deterministic-sol.uni:solbuyer.testnet", "solana"
+    )["depositAddress"]
+    assert session_sol1["depositAddress"] == expected_sol_addr
 
 
 def test_checkout_slippage_buffer_policy():

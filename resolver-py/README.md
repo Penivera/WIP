@@ -24,7 +24,7 @@ Backend orchestration service for Universal Name (`.uni`). Queries `unam-registr
    uv run python main.py
    ```
 
-*See [DOCS_SUPPORTED_STABLES.md](../DOCS_SUPPORTED_STABLES.md) for full details on multichain stablecoin support, intent settlement, and cross-chain routing.*
+*See [DOCS_SUPPORTED_STABLES.md](../DOCS_SUPPORTED_STABLES.md) for full details on multichain stablecoin support, and [DOCS_WALLET_CONNECTIVITY.md](../DOCS_WALLET_CONNECTIVITY.md) for multichain wallet connectivity standards.*
 
 ## Endpoints
 
