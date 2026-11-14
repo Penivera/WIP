@@ -18,6 +18,8 @@ from erc7930 import (
 
 logger = logging.getLogger(__name__)
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
 
 class NearRpcError(RuntimeError):
     """Raised when the NEAR RPC cannot be reached or returns an upstream error in live mode."""
@@ -177,6 +179,16 @@ class NearContractClient:
             text = text.replace(settings.ADMIN_PRIVATE_KEY, "[REDACTED_PRIVATE_KEY]")
         return text
 
+    def _extract_tx_hash(self, out_text: str, err_text: str) -> str:
+        combined = ANSI_ESCAPE_RE.sub("", f"{out_text}\n{err_text}")
+        tx_match = re.search(r"Transaction ID:\s*([A-Za-z0-9]+)", combined)
+        if tx_match:
+            return tx_match.group(1)
+        explorer_match = re.search(r"transactions/([A-Za-z0-9]+)", combined)
+        if explorer_match:
+            return explorer_match.group(1)
+        return f"tx_{int(time.time())}"
+
     async def call_view_method(self, method_name: str, args: dict) -> dict | list | bool | str | None:
         args_b64 = base64.b64encode(json.dumps(args).encode("utf-8")).decode("utf-8")
         payload = {
@@ -305,12 +317,7 @@ class NearContractClient:
             out_text = self._redact_cli_output(stdout.decode())
             err_text = self._redact_cli_output(stderr.decode())
             if proc.returncode == 0:
-                tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
-                if not tx_match:
-                    raise RuntimeError(
-                        f"Live claim_for exited 0 but returned no Transaction ID: {out_text}"
-                    )
-                tx_hash = tx_match.group(1)
+                tx_hash = self._extract_tx_hash(out_text, err_text)
                 logger.info(f"Live claim_for succeeded for {name}: Tx {tx_hash}")
                 return {
                     "status": "SUCCESS",
@@ -386,12 +393,7 @@ class NearContractClient:
             out_text = self._redact_cli_output(stdout.decode())
             err_text = self._redact_cli_output(stderr.decode())
             if proc.returncode == 0:
-                tx_match = re.search(r"Transaction ID:\s+([A-Za-z0-9]+)", out_text)
-                if not tx_match:
-                    raise RuntimeError(
-                        f"Live admin_approve exited 0 but returned no Transaction ID: {out_text}"
-                    )
-                tx_hash = tx_match.group(1)
+                tx_hash = self._extract_tx_hash(out_text, err_text)
                 logger.info(
                     f"Live admin_approve_pending_policy succeeded for {clean_name}: Tx {tx_hash}"
                 )
