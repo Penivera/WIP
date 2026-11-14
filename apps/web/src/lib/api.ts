@@ -222,10 +222,16 @@ export const api = {
 
     // Routed or bank. Without a live 1Click quote the resolver falls back to a
     // derived address that nothing sweeps, so never show that as payable.
+    const warnings: string[] = Array.isArray(r.warnings) ? r.warnings.map(String) : [];
+    if (warnings.some((w) => w.startsWith("SANDBOX_SAMPLE_ADDRESS_BLOCKED"))) {
+      return fail(
+        "NO_ROUTE",
+        `"${name}" pays out to a sample address nobody controls, so the resolver will not create a real payment for it. The owner needs to set a real destination address.`,
+      );
+    }
     if (r.provider !== LIVE_PROVIDER || !r.depositAddress || !r.expiresAt) {
       return fail("NO_ROUTE", "The routing service did not return a live quote for this payment. Try again, or pick another token.");
     }
-    const warnings: string[] = Array.isArray(r.warnings) ? r.warnings.map(String) : [];
     if (warnings.some((w) => w.startsWith("BELOW_MINIMUM")) || BigInt(r.minAmount ?? 0) > base) {
       return fail("AMOUNT_TOO_LOW", `Amount is too low to route. Send at least ${formatUnits(String(r.minAmount), q.token.decimals)} ${q.token.token}.`);
     }
@@ -254,7 +260,13 @@ export const api = {
       "This address is for this payment only. Do not save or reuse it.",
     ];
     if (r.depositMemo) shown.push("Include the memo, or the deposit will not be credited.");
-    if (isBank) shown.push("Bank payout is simulated in this demo.");
+    if (isBank) {
+      shown.push(
+        warnings.some((w) => w.startsWith("OFFRAMP_REFERENCE_UNVERIFIED"))
+          ? "The owner's bank provider reference is not verified, so the funds will stay as USDC at their destination address. No bank payout will happen."
+          : "Bank payout is simulated in this demo.",
+      );
+    }
 
     return {
       ok: true,

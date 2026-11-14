@@ -101,5 +101,6 @@ Run from the repository root:
 - A routed payment address is for one payment only. The pay card gives 20 minutes to send, then asks for new details.
 - Bank payout is simulated.
 - The resolver keeps payment history in memory, so "Incoming payments" empties when it restarts.
-- Claiming goes through the resolver's checkout (`/v1/checkout/*`). The widget shows the price, then offers "Claim without payment (demo)" and checks the contract afterwards. The name is only really claimed when the resolver runs with `USE_MOCK_CONTRACT="false"`, the `near` CLI installed, and a key the contract accepts as relayer or admin. Otherwise the widget reports "Not claimed on-chain".
-- Paying for a name from another chain is not offered in the widget. The resolver's deposit address for it is not collected by anything, so funds sent there would be lost.
+- Claiming goes through the resolver's checkout (`/v1/checkout/*`). The widget shows the price, then offers "Claim without payment (demo)" and checks the contract afterwards. For that to write on-chain, the resolver needs `USE_MOCK_CONTRACT="false"`, `ALLOW_DEMO_ENDPOINTS="true"`, the `near` CLI on its PATH, and `ADMIN_PRIVATE_KEY` set in `resolver-py/.env` to a key the contract accepts as relayer or admin. Without the key the resolver returns an error and the widget shows it.
+- "Apply now (admin)" on a waiting destination change uses the resolver's admin endpoint. It is refused if the resolver has `ADMIN_API_TOKEN` set, since the widget does not hold that token.
+- Paying for a name is not offered in the widget yet. The resolver rejects payments from other chains, and paying in USDC on NEAR needs the contract to accept that token first.

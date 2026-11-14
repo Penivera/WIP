@@ -51,12 +51,23 @@ const destAddress = ref("");
 const forceDefault = ref(false);
 const payoutType = ref<"crypto" | "bank">("crypto");
 const bankProvider = ref("demo-offramp");
-const bankReference = ref("");
+const bankReference = ref("ref-001");
+/**
+ * What the resolver's simulated off-ramp accepts: USDC on these chains, and a
+ * provider/reference pair it knows. Anything else is treated as unverified.
+ * Mirrors SUPPORTED_BANK_USDC_BY_CHAIN and PROVIDER_SANDBOX_DB in resolver-py/offramp_adapter.py.
+ */
+const BANK_CHAINS = ["solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "eip155:1", "eip155:8453", "eip155:42161", "eip155:10", "eip155:137"];
+const BANK_REFERENCES: Record<string, string> = { "demo-offramp": "ref-001", "sphere-sandbox": "prov_ref_demo_001" };
+const destChains = computed(() => (payoutType.value === "bank" ? CHAINS.filter((c) => BANK_CHAINS.includes(c.key)) : CHAINS));
+const bankKnown = computed(() => BANK_REFERENCES[bankProvider.value] === bankReference.value);
 
 // direct wallet form
 const walletChain = ref("eip155:8453");
 
-const destTokens = computed(() => tokens.value.filter((t) => t.chain === destChain.value));
+const destTokens = computed(() =>
+  tokens.value.filter((t) => t.chain === destChain.value && (payoutType.value === "crypto" || t.token === "USDC")),
+);
 const destTokenInfo = computed(() => destTokens.value.find((t) => t.token === destToken.value));
 const destAddressOk = computed(() => isValidAddress(destChain.value, destAddress.value));
 const evmChains = CHAINS.filter((c) => c.namespace === "eip155");
@@ -80,6 +91,11 @@ watch(screen, () => {
 
 watch(payChain, () => {
   if (!payTokens.value.some((t) => t.symbol === payToken.value)) payToken.value = payTokens.value[0]?.symbol ?? "";
+});
+
+watch(payoutType, () => {
+  if (!destChains.value.some((c) => c.key === destChain.value)) destChain.value = destChains.value[0]?.key ?? destChain.value;
+  if (!destTokens.value.some((t) => t.token === destToken.value)) destToken.value = destTokens.value[0]?.token ?? "";
 });
 
 watch(destChain, () => {
@@ -441,7 +457,7 @@ onUnmounted(() => {
           <div>
             <label for="un-dchain">Receive on</label>
             <select id="un-dchain" v-model="destChain">
-              <option v-for="c in CHAINS" :key="c.key" :value="c.key">{{ c.name }}</option>
+              <option v-for="c in destChains" :key="c.key" :value="c.key">{{ c.name }}</option>
             </select>
           </div>
           <div>
@@ -475,6 +491,12 @@ onUnmounted(() => {
             <input id="un-pref" v-model.trim="bankReference" placeholder="ref-001" autocomplete="off" />
           </div>
         </div>
+
+        <p v-if="payoutType === 'bank' && !bankKnown" class="muted" style="margin-top: 6px">
+          The demo off-ramp only recognises provider <span class="mono">demo-offramp</span> with reference
+          <span class="mono">ref-001</span>. With anything else, payments arrive as USDC at the address above and no bank
+          payout is simulated.
+        </p>
 
         <label><input v-model="forceDefault" type="checkbox" />Route every payment here, even where I have a direct wallet</label>
 
